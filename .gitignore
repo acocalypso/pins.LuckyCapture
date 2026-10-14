@@ -1,0 +1,10 @@
+bin/
+obj/
+artifacts/
+*.user
+*.partial
+.vs/
+.references/
+
+# Private hardware transport never belongs in the public repository.
+pi_task.py

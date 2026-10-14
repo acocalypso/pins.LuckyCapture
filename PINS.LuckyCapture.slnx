@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PINS.LuckyCapture/PINS.LuckyCapture.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PINS.LuckyCapture.Tests/PINS.LuckyCapture.Tests.csproj" />
+  </Folder>
+</Solution>

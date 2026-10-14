@@ -1,0 +1,30 @@
+name: Validate LuckyCapture
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: PINS.LuckyCapture
+      - uses: actions/checkout@v4
+        with:
+          repository: nitr57/pins
+          ref: unstable
+          path: pins
+          lfs: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Install independent format validators
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Test ownership, pipeline and independent decoding
+        run: >-
+          dotnet test PINS.LuckyCapture/tests/PINS.LuckyCapture.Tests/PINS.LuckyCapture.Tests.csproj
+          -c Release -p:GeneratePackageOnBuild=false -p:DisableImplicitSystemDrawingReference=true
+          -p:Platform=AnyCPU -p:PlatformTarget=AnyCPU
