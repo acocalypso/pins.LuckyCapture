@@ -17,7 +17,7 @@ public sealed record CaptureStatus(string State, DateTimeOffset? StartedTime, do
     string? OutputPath, long? FreeDiskBytes, long? TargetFrames, double? TargetDurationSeconds,
     double? FrameProgress, double? TimeProgress, string? StopReason, string? LastError,
     string? PreviewError, long PreviewSequence, long Revision, string? SidecarError = null, long StreamTapDroppedFrames = 0,
-    string AcquisitionPath = "repeated_exposures");
+    string AcquisitionPath = "repeated_exposures", string RoiMode = "full_frame");
 
 public interface IFrameWriter : IAsyncDisposable {
     long FramesWritten { get; }
@@ -88,7 +88,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
                     diskBytes, recording?.FrameLimit, recording?.DurationSeconds,
                     recording?.FrameLimit is long f ? Math.Min(1, (double)storedFrames / f) : null,
                     recording?.DurationSeconds is double d ? Math.Min(1, seconds / d) : null,
-                    stopReason, error, previewError, previewSequence, revision, sidecarError, camera.StreamTapDroppedFrames, camera.AcquisitionPath);
+                    stopReason, error, previewError, previewSequence, revision, sidecarError, camera.StreamTapDroppedFrames, camera.AcquisitionPath, camera.RoiMode);
             }
         }
     }
@@ -188,7 +188,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
         } catch (Exception ex) {
             durationRegistration.Dispose(); durationCancellation?.Dispose(); durationCancellation = null;
             if (began) await camera.EndAsync().ConfigureAwait(false);
-            lock (sync) { state = CaptureState.ERROR; error = ex.Message; }
+            lock (sync) { state = CaptureState.ERROR; error = ex.Message; if (outputPath != null && !File.Exists(outputPath)) outputPath = null; }
             PublishChange();
             throw;
         } finally { transitions.Release(); }
@@ -267,6 +267,8 @@ public sealed class CaptureEngine : IAsyncDisposable {
             lock (sync) {
                 if (options != null) dropped = acquired - written;
                 elapsed.Stop(); currentFps = 0; state = error == null ? CaptureState.READY : CaptureState.ERROR;
+                // No writer/file was created if acquisition failed before the first frame.
+                if (outputPath != null && !File.Exists(outputPath)) outputPath = null;
             }
             if (options != null && outputPath != null && written > 0 && File.Exists(outputPath)) await SaveSidecarAsync(options).ConfigureAwait(false);
             PublishChange();

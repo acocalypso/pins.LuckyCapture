@@ -32,8 +32,9 @@ public sealed class PlayerOneConnectedStream : IConnectedCameraStream {
             throw new LuckyCaptureException("UNSUPPORTED_PIXEL_FORMAT", "Player One must provide a raw mono/Bayer format");
         depth = format == POAImgFormat.POA_RAW16 ? 16 : 8;
         monoOutput = format == POAImgFormat.POA_MONO8;
-        if (width != (value.Roi?.Width ?? camera.CameraXSize) / value.BinX || height != (value.Roi?.Height ?? camera.CameraYSize) / value.BinY)
-            throw new LuckyCaptureException("INVALID_ROI", "Player One changed requested dimensions");
+        if (width != (value.Roi?.Width ?? camera.CameraXSize) / value.BinX || height != (value.Roi?.Height ?? camera.CameraYSize) / value.BinY ||
+            geometry.Item1 * value.BinX != (value.Roi?.X ?? 0) || geometry.Item2 * value.BinY != (value.Roi?.Y ?? 0) || geometry.Item5 != value.BinX)
+            throw new LuckyCaptureException("INVALID_ROI", "Player One changed requested ROI origin, dimensions or binning");
         started = true; sdk.StartVideoCapture(value.ExposureSeconds, width, height); clock = new();
         return Task.CompletedTask;
     }

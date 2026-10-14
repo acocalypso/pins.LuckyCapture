@@ -84,6 +84,8 @@ public class CameraIntegrationTests {
     public async Task OneFramePreservesPixelsDepthAndSequenceSettings() {
         var (mediator, handler, info) = Create();
         var pixels = new ushort[] { 0, 4095, 1024, 2048 };
+        info.XSize = info.YSize = 2;
+        info.CanSubSample = false;
         var array = Mock.Of<IImageArray>(a => a.FlatArray == pixels);
         var image = Mock.Of<IImageData>(i => i.Data == array && i.Properties == new ImageProperties(2, 2, 12, false, 42, 5));
         var exposure = new Mock<IExposureData>();
@@ -99,7 +101,9 @@ public class CameraIntegrationTests {
             Assert.That(adapter.Metadata.ExclusiveOwnershipSupported, Is.False);
         });
         handler.Verify(h => h.Capture(It.Is<CaptureSequence>(s => s.Gain == 42 && s.Offset == 5 &&
-            s.EnableSubSample && s.ExposureTime == 0.01), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()), Times.Once);
+            !s.EnableSubSample && s.ExposureTime == 0.01), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()), Times.Once);
+        Assert.That(adapter.Metadata.RoiSupported, Is.True);
+        Assert.That(adapter.RoiMode, Is.EqualTo("software"));
         await adapter.EndAsync();
         Assert.That(mediator.IsFreeToCapture(new object()), Is.True);
         _ = info;

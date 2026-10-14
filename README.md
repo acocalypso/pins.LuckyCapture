@@ -51,6 +51,16 @@ Example settings:
 ```
 
 Depth selection currently applies to supported SVBony stream formats.
+ROI coordinates always refer to unbinned sensor pixels. Supported hardware ROI
+is preferred; ASI/SVBony capture an enclosing aligned region when needed, then
+crop to the exact selection. If a driver rejects or changes ROI geometry before
+the first frame, acquisition retries once using full-frame capture and software
+crop. Unknown drivers and cameras without hardware ROI use software crop directly.
+`status.roiMode` reports `hardware`, `hardware_crop`, `software`, or `full_frame`.
+Software cropping reduces output size, but does not improve camera transfer FPS.
+Native stream source buffers remain limited to 32 MiB; a scaled JPEG preview
+cannot supply exact sensor ROI coordinates (use ordinary exposures instead).
+ROI fallback never creates a second camera connection or modifies PINS core.
 `acquisitionMode: "exposures"` forces ordinary capture. Unverified streams require
 `allowExperimentalStreaming: true`; QHY additionally requires
 `allowDriverReconnect: true`. INDI depth reduction is rejected unless explicitly
@@ -66,6 +76,13 @@ SV905C, 512x512 ROI, 20 ms exposure, 300-frame SER runs:
 |---|---:|---:|---:|
 | RAW16 | 16.84 | 300 | 0 |
 | RAW8 | 31.58 | 300 | 0 |
+
+ROI regression checks (2026-10-14): native preview passed 24x14, 100x100 and
+10x10 edge crops. Native 8/16-bit SER and AVI passed five-frame 24x14 captures;
+100x100 used an aligned hardware region and preserved exact output dimensions.
+The same three ROIs passed five-frame 16-bit INDI SER recording and decoding.
+Other camera families use the shared ROI fallback but still need model-specific
+hardware validation.
 
 Both decoded fully with FFmpeg. Ordinary 16-bit exposure worked afterward.
 Native SER and FFV1 AVI passed earlier 30-frame checks. INDI RAW16 recorded and
@@ -83,11 +100,10 @@ dotnet build src/PINS.LuckyCapture/PINS.LuckyCapture.csproj -c Release -r linux-
 dotnet test tests/PINS.LuckyCapture.Tests/PINS.LuckyCapture.Tests.csproj -c Release -p:GeneratePackageOnBuild=false -p:DisableImplicitSystemDrawingReference=true -p:Platform=AnyCPU -p:PlatformTarget=AnyCPU
 ```
 
-84 local tests pass; Linux ARM64 compilation and the physical checks above passed.
+95 local tests pass; Linux ARM64 compilation and the physical checks above passed.
 Frontend type checking and production build pass. Existing PINS System.Windows
 compatibility warnings remain. The backend and TNS UI are deployed on the Pi;
-served assets, live PNG preview and histogram passed deployment checks. Visual
-browser checks, Debian
-installation validation, broader SDK hardware coverage and astronomy
-application compatibility remain. FFmpeg decoding does not establish
+served assets, live PNG preview and histogram passed deployment checks. Mobile browser emulation and English/German ROI explanations passed layout
+checks. Debian installation validation, broader SDK hardware coverage and
+astronomy application compatibility remain. FFmpeg decoding does not establish
 AutoStakkert/PIPP compatibility with FFV1. License: MPL-2.0.

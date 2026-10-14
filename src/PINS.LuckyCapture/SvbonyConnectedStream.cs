@@ -43,8 +43,10 @@ public sealed class SvbonyConnectedStream : IConnectedCameraStream {
         var geometry = sdk.GetROI();
         width = geometry.Item3; height = geometry.Item4; depth = sdk.GetBitDepth();
         if (width != (roi?.Width ?? camera.CameraXSize) / value.BinX ||
-            height != (roi?.Height ?? camera.CameraYSize) / value.BinY || depth is < 8 or > 16)
-            throw new LuckyCaptureException("FRAME_LAYOUT_CHANGED", "SVBony ROI or depth differs from requested settings");
+            height != (roi?.Height ?? camera.CameraYSize) / value.BinY ||
+            geometry.Item1 * value.BinX != (roi?.X ?? 0) || geometry.Item2 * value.BinY != (roi?.Y ?? 0) ||
+            geometry.Item5 != value.BinX || depth is < 8 or > 16)
+            throw new LuckyCaptureException("FRAME_LAYOUT_CHANGED", $"SVBony ROI readback {geometry.Item1},{geometry.Item2} {width}x{height} bin {geometry.Item5}, depth {depth}; requested {roi?.X ?? 0},{roi?.Y ?? 0} {(roi?.Width ?? camera.CameraXSize) / value.BinX}x{(roi?.Height ?? camera.CameraYSize) / value.BinY} bin {value.BinX}");
         var formats = ReflectionAccess.Field<List<SVB_IMG_TYPE>>(sdk, "formats");
         var rawFormat = depth switch {
             8 => SVB_IMG_TYPE.SVB_IMG_RAW8, 10 => SVB_IMG_TYPE.SVB_IMG_RAW10,

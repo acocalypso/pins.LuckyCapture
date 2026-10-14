@@ -155,6 +155,21 @@ public class CapturePipelineTests {
         }
     }
 
+    [Test]
+    public async Task FailedFirstFrameDoesNotReportANonexistentPartialRecording() {
+        var camera = new FakeCamera { FailAcquisition = true };
+        var writer = new FakeWriter(camera);
+        var writerCreated = false;
+        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => { writerCreated = true; return writer; }, _ => long.MaxValue);
+        await engine.StartRecordingAsync(new(FrameLimit: 1));
+        await Wait(() => !engine.IsActive);
+        Assert.That(engine.Status.State, Is.EqualTo("ERROR"));
+        Assert.That(engine.Status.OutputPath, Is.Null);
+        Assert.That(engine.Status.OutputFilename, Is.Null);
+        Assert.That(writerCreated, Is.False);
+        Assert.That(camera.EndCalls, Is.EqualTo(1));
+    }
+
     internal static async Task Run(string program, params string[] arguments) {
         var start = new ProcessStartInfo(program) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, CreateNoWindow = true };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
@@ -172,12 +187,14 @@ public class CapturePipelineTests {
         private bool connected = true;
         public int Calls, BeginCalls, EndCalls;
         public bool NativeVideo;
+        public bool FailAcquisition;
         public CameraMetadata Metadata => new(connected, "fake", "test", 8, 8, 16, "Monochrome", null, 1, 1, false, false, true, NativeVideo);
         public IReadOnlyList<ControlDescriptor> Controls => [];
         public void ValidateSettings(CaptureSettings settings) { }
         public Task BeginAsync(CancellationToken token) { BeginCalls++; return Task.CompletedTask; }
         public async Task<AcquiredFrame> AcquireAsync(CaptureSettings settings, CancellationToken token) {
             await Task.Delay(2, token);
+            if (FailAcquisition) throw new LuckyCaptureException("INVALID_ROI", "Rejected before first frame");
             if (!connected) throw new LuckyCaptureException("CAMERA_NOT_CONNECTED", "Fake disconnect");
             Calls++;
             return new(Calls, DateTimeOffset.UtcNow, 8, 8, 16, false, null, 0, 0, 1, 1, null, Enumerable.Repeat((ushort)1234, 64).ToArray());

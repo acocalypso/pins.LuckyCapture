@@ -82,6 +82,7 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
                 ownership = "cooperative_capture_block",
                 ownershipLimit = "Acquisition callers must honor PINS capture blocks; direct driver access is unguarded",
                 roi = camera.Metadata.RoiSupported, binning = camera.Metadata.Connected,
+                roiFallback = "full_frame_crop", roiFallbackFrameLimitBytes = 32 * 1024 * 1024,
                 bitDepthSelection = camera.StreamDepthOptions.Length > 1, ser = true, avi = RecordingWriters.AviAvailable, preview = true, histogram = true,
                 acquisition = camera.Metadata.StreamingSupported ? camera.StreamCapability.Mode : "repeated_exposures", stream = camera.StreamCapability,
                 sdkDropCountAvailable = false, gamma = false, highSpeed = false, frameRateControl = false,

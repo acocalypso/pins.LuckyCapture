@@ -29,6 +29,8 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
     private string previousAcquisitionPath = "repeated_exposures";
     public string AcquisitionPath => connectedStream?.Mode ?? (video != null ? "public_live_view" : previousAcquisitionPath);
     private CaptureSettings preparedSettings = new();
+    private RoiAcquisition roiAcquisition = new();
+    public string RoiMode => roiAcquisition.Mode;
     private int plannedReconnect;
     public long StreamTapDroppedFrames => connectedStream?.DroppedFrames ?? previousStreamDrops;
     private bool disposed;
@@ -64,7 +66,7 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
             var camera = mediator.GetDevice() as ICamera;
             return new(true, info.Name, camera?.GetType().Name, info.XSize, info.YSize,
                 info.BitDepth, info.SensorType.ToString(), double.IsFinite(info.Temperature) ? info.Temperature : null,
-                info.BinX, info.BinY, info.CanSubSample, info.CanShowLiveView,
+                info.BinX, info.BinY, info.XSize > 0 && info.YSize > 0, info.CanShowLiveView,
                 false, StreamingEnabled(preparedSettings), StreamCapability.PreviewOnly);
         }
     }
@@ -118,6 +120,7 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
                 ownsCaptureBlock = true;
             } catch (Exception ex) { throw new LuckyCaptureException("CAMERA_BUSY", ex.Message); }
             sequence = 0;
+            roiAcquisition = new();
             previousStreamDrops = 0;
             previousAcquisitionPath = "repeated_exposures";
             sessionClock = new SessionClock();
@@ -141,7 +144,16 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
         if (!await frameGate.WaitAsync(0, token).ConfigureAwait(false))
             throw new LuckyCaptureException("CAMERA_BUSY", "Frame acquisition is already active");
         try {
-            return await AcquireFrameAsync(settings, token).ConfigureAwait(false);
+            var info = RequireConnected();
+            Validate(settings, info);
+            var backend = StreamCapability.Backend;
+            // Unknown/third-party drivers use full-frame crop rather than undocumented ROI rules.
+            var hardwareRoi = info.CanSubSample && backend is "SVBony" or "ZWO ASI" or "Player One" or
+                "ToupTek family" or "QHY" or "Atik" or "INDI";
+            return await roiAcquisition.AcquireAsync(settings, info.XSize, info.YSize, hardwareRoi,
+                AcquireFrameAsync, ResetSourceAsync, token,
+                backend is "SVBony" or "ZWO ASI" ? 8 : 1,
+                backend is "SVBony" or "ZWO ASI" or "ToupTek family" ? 2 : 1).ConfigureAwait(false);
         } finally {
             frameGate.Release();
         }
@@ -227,7 +239,7 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
         if (!info.BinningModes.Any(b => b.X == settings.BinX && b.Y == settings.BinY))
             throw new LuckyCaptureException("CONTROL_OUT_OF_RANGE", "Unsupported binning mode");
         if (settings.Roi is not { } r) return;
-        if (!info.CanSubSample || r.X < 0 || r.Y < 0 || r.Width < 1 || r.Height < 1 ||
+        if (r.X < 0 || r.Y < 0 || r.Width < 1 || r.Height < 1 ||
             (long)r.X + r.Width > info.XSize || (long)r.Y + r.Height > info.YSize ||
             r.X % settings.BinX != 0 || r.Y % settings.BinY != 0 ||
             r.Width % settings.BinX != 0 || r.Height % settings.BinY != 0 ||
@@ -238,6 +250,8 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
     public void ValidateSettings(CaptureSettings settings) {
         var info = RequireConnected();
         Validate(settings, info);
+        if (settings.Roi != null && StreamCapability.PreviewOnly && settings.AcquisitionMode == "preview")
+            throw new LuckyCaptureException("INVALID_ROI", "This JPEG preview is scaled and does not expose sensor ROI coordinates; use exposures");
         if (settings.BitDepth is int depth && depth != info.BitDepth && (StreamCapability.Backend != "SVBony" || !StreamingEnabled(settings)))
             throw new LuckyCaptureException("CONTROL_UNSUPPORTED", "Depth selection is only implemented for SVBony streaming");
         preparedSettings = settings;
@@ -267,21 +281,28 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
         }
     }
 
+    private async Task ResetSourceAsync() {
+        if (video != null) await video.DisposeAsync().ConfigureAwait(false);
+        if (connectedStream != null) {
+            previousStreamDrops = connectedStream.DroppedFrames;
+            previousAcquisitionPath = connectedStream.Mode;
+            var reconnect = StreamCapability.RequiresDriverReconnect;
+            if (reconnect) Interlocked.Increment(ref plannedReconnect);
+            try { await connectedStream.DisposeAsync().ConfigureAwait(false); }
+            finally { if (reconnect) Interlocked.Decrement(ref plannedReconnect); }
+        }
+        connectedStream = null;
+        video = null; videoSettings = null;
+        videoCancellation?.Dispose(); videoCancellation = null;
+    }
+
     public async Task EndAsync() {
         lock (lifecycleLock) disconnected?.Cancel();
         await frameGate.WaitAsync().ConfigureAwait(false);
         try {
             if (!ownsCaptureBlock) return;
             try {
-                if (video != null) await video.DisposeAsync().ConfigureAwait(false);
-                if (connectedStream != null) {
-                    previousStreamDrops = connectedStream.DroppedFrames;
-                    previousAcquisitionPath = connectedStream.Mode;
-                    var reconnect = StreamCapability.RequiresDriverReconnect;
-                    if (reconnect) Interlocked.Increment(ref plannedReconnect);
-                    try { await connectedStream.DisposeAsync().ConfigureAwait(false); }
-                    finally { if (reconnect) Interlocked.Decrement(ref plannedReconnect); }
-                }
+                await ResetSourceAsync().ConfigureAwait(false);
             } finally {
                 connectedStream = null;
                 video = null; videoSettings = null;

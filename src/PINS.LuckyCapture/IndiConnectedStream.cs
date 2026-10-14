@@ -60,6 +60,13 @@ public sealed class IndiConnectedStream : IConnectedCameraStream {
             if (device.GetNumberProperty("CCD_STREAM_FRAME") != null)
                 await SetNumbers("CCD_STREAM_FRAME", [("X", (value.Roi?.X ?? 0) / value.BinX), ("Y", (value.Roi?.Y ?? 0) / value.BinY), ("WIDTH", width), ("HEIGHT", height)]).ConfigureAwait(false);
             else if (value.Roi != null) throw new LuckyCaptureException("INVALID_ROI", "INDI driver lacks streaming ROI controls");
+            if (device.GetNumberProperty("CCD_STREAM_FRAME") is { } actualFrame) {
+                var actual = actualFrame.Numbers.ToDictionary(n => n.Name, n => n.Value);
+                foreach (var (name, expected) in new (string, double)[] {
+                    ("X", (value.Roi?.X ?? 0) / value.BinX), ("Y", (value.Roi?.Y ?? 0) / value.BinY), ("WIDTH", width), ("HEIGHT", height) })
+                    if (!actual.TryGetValue(name, out var accepted) || accepted != expected)
+                        throw new LuckyCaptureException("INVALID_ROI", $"INDI streaming ROI readback differs for {name}");
+            }
             if (!await device.SetSwitchValueAsync("CCD_VIDEO_STREAM", "STREAM_ON", true, TimeSpan.FromSeconds(5), token).ConfigureAwait(false))
                 throw new LuckyCaptureException("SDK_ERROR", "INDI stream start was not acknowledged");
         } catch { await DisposeAsync(); throw; }
