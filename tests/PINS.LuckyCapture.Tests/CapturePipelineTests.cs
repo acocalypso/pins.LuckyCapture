@@ -147,6 +147,33 @@ public class CapturePipelineTests {
         Assert.That(preview.Status.StopReason, Is.EqualTo("camera_disconnected"));
     }
 
+    [Test]
+    public async Task CustomSaveRootIsUsedForRecordingSnapshotAndDiskChecks() {
+        var root = Path.Combine(Path.GetTempPath(), "LuckyCapture-custom-" + Guid.NewGuid());
+        var selected = Path.Combine(root, "selected");
+        var camera = new FakeCamera();
+        var writer = new FakeWriter(camera);
+        var probes = new List<string>();
+        string? writerPath = null;
+        try {
+            await using var engine = new CaptureEngine(camera, Path.Combine(root, "default"),
+                (path, _, _) => { writerPath = path; return writer; },
+                path => { probes.Add(path); return long.MaxValue; });
+            await engine.StartRecordingAsync(new(FrameLimit: 1, OutputDirectory: selected));
+            await Wait(() => !engine.IsActive);
+            Assert.That(Path.GetDirectoryName(writerPath), Is.EqualTo(selected));
+            Assert.That(probes, Is.All.EqualTo(selected));
+            await engine.StartPreviewAsync();
+            await Wait(() => engine.Preview != null);
+            await engine.StopAsync();
+            var png = await engine.SaveSnapshotAsync(new(OutputDirectory: selected), default);
+            Assert.That(Path.GetDirectoryName(png), Is.EqualTo(selected));
+            Assert.That(File.Exists(png), Is.True);
+            Assert.That(Directory.Exists(Path.Combine(root, "default")), Is.False);
+            Assert.Throws<LuckyCaptureException>(() => OutputPaths.ResolveRoot(root, "relative/folder"));
+        } finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     private static async Task Wait(Func<bool> done) {
         var timer = Stopwatch.StartNew();
         while (!done()) {

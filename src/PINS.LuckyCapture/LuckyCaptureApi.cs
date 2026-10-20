@@ -82,7 +82,7 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
             return new { settings = engine.Settings, controls = camera.Controls };
         }
         switch (operation) {
-            case "health": return new { plugin = "PINS LuckyCapture", version = "0.2.0", available = true };
+            case "health": return new { plugin = "PINS LuckyCapture", version = "0.2.1", available = true };
             case "camera": return camera.Metadata;
             case "controls": return camera.Controls;
             case "capabilities": return new {
@@ -94,9 +94,10 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
                 ownershipLimit = "Acquisition callers must honor PINS capture blocks; direct driver access is unguarded",
                 roi = camera.Metadata.RoiSupported, binning = camera.Metadata.Connected,
                 roiFallback = "full_frame_crop", roiFallbackFrameLimitBytes = 32 * 1024 * 1024,
-                bitDepthSelection = camera.StreamDepthOptions.Length > 1, ser = true, avi = RecordingWriters.AviAvailable, preview = true, histogram = true,
+                rawDepthOptions = camera.StreamDepthOptions, bitDepthSelection = camera.StreamDepthOptions.Length > 1, ser = true, avi = RecordingWriters.AviAvailable, preview = true, histogram = true,
                 acquisition = camera.Metadata.StreamingSupported ? camera.StreamCapability.Mode : "repeated_exposures", stream = camera.StreamCapability,
-                sdkDropCountAvailable = false, gamma = false, highSpeed = false, frameRateControl = false,
+                sdkDropCountAvailable = camera.StreamCapability.Backend == "ZWO ASI", gamma = false, highSpeed = false, frameRateControl = false,
+                defaultOutputDirectory = engine.DefaultOutputDirectory, customOutputDirectory = true,
                 snapshot = true, snapshotRepresentation = "display_png"
             };
             case "status":

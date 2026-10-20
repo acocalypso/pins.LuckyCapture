@@ -13,7 +13,7 @@ public sealed record CameraMetadata(bool Connected, string? Name, string? Backen
     int? Width, int? Height, int? BitDepth, string? SensorType, double? Temperature,
     short? BinX, short? BinY, bool RoiSupported, bool LiveViewSupported,
     bool ExclusiveOwnershipSupported, bool StreamingSupported = false, bool StreamPreviewOnly = false,
-    string SourceKind = "real", bool? PhysicalCameraConnected = null);
+    string SourceKind = "real", bool? PhysicalCameraConnected = null, string? DeviceId = null);
 
 public sealed record CaptureSettings(double ExposureSeconds = 0.02, int? Gain = null,
     int? Offset = null, short BinX = 1, short BinY = 1, RegionOfInterest? Roi = null,

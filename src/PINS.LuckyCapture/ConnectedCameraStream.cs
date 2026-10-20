@@ -34,7 +34,7 @@ public static class ConnectedCameraStreams {
             }
             if (camera is ASICamera) {
                 _ = ReflectionAccess.Field<int>(camera, "_cameraId");
-                return new("ZWO ASI", "reflection_asi_raw16", true, "Hardware validation pending; ROI width alignment is checked");
+                return new("ZWO ASI", "reflection_asi_video", true, "Hardware validation pending; ROI width alignment is checked");
             }
             if (camera is QHYCamera) return new("QHY", "existing_qhy_driver_live_view", true,
                 "The existing PINS driver must reopen its own connection to change mode; opt-in required", RequiresDriverReconnect: true);

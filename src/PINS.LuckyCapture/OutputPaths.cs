@@ -5,6 +5,12 @@ namespace PINS.LuckyCapture;
 
 public static class OutputPaths {
     private static long sequence;
+    public static string ResolveRoot(string defaultDirectory, string? selectedDirectory) {
+        if (string.IsNullOrWhiteSpace(selectedDirectory)) return Path.GetFullPath(defaultDirectory);
+        if (selectedDirectory.Length > 4096 || !Path.IsPathFullyQualified(selectedDirectory))
+            throw new LuckyCaptureException("INVALID_OUTPUT_PATH", "Choose an absolute folder path on the PINS host");
+        return Path.GetFullPath(selectedDirectory);
+    }
     public static string CreatePartialPath(string allowedRoot, RecordingOptions options, CameraMetadata camera) {
         if (options.Format is not ("ser" or "avi" or "png"))
             throw new LuckyCaptureException("INVALID_FORMAT", "Choose SER or AVI");

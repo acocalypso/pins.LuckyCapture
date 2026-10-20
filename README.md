@@ -132,3 +132,23 @@ collapsed. A clear confirmation approves bounded physical motion before it start
 See [setup, API contract, reproduction commands and validation](docs/focus-simulation.md).
 Use LuckyCapture on `unstable`, the `acocalypso/Touch-N-Stars` frontend on `feat/luckycapture`,
 and the TNS Linux plugin on `nitr57/N.I.N.A-Plugin-for-Touch-N-Stars:unstable`.
+
+## Camera preferences and output (0.2.1)
+
+LuckyCapture offers only the raw output formats reported by the connected SDK.
+ZWO streaming supports advertised RAW8/RAW16, checks the SDK ROI readback, restores
+its previous format/geometry on stop, and logs the applied stream geometry. A
+12-bit sensor ADC does not imply a separate RAW12 transfer format: RAW16 preserves
+that precision in two bytes per pixel. RAW8 reduces transfer and SER storage size.
+Actual frame rate depends on exposure, ROI height, USB, camera mode and disk speed.
+
+The web UI remembers applied settings, save folder and preview orientation per
+PINS host and camera ID in that browser. Unsupported choices are rejected by the
+connected driver's capability checks. Preview rotation changes only the display;
+ROI selection is mapped back to sensor coordinates and recorded pixels stay raw.
+
+Recording > File settings > Save folder accepts an absolute directory on the PINS
+host (including a mounted SSD). Blank uses the existing default, shown in the UI;
+`PINS_LUCKYCAPTURE_DIRECTORY` still overrides that default at startup. The service
+user needs write permission. Subfolders remain relative to the selected root and
+disk-space checks use the selected filesystem. Saved PNGs use that root too.

@@ -8,7 +8,7 @@ public enum CaptureState { DISCONNECTED, READY, PREVIEWING, STARTING, RECORDING,
 public sealed record RecordingOptions(string Format = "ser", long? FrameLimit = null,
     double? DurationSeconds = null, double PlaybackFps = 25, long MinimumFreeBytes = 512 * 1024 * 1024,
     string Target = "", string Filter = "", string RelativeDirectory = "",
-    string FilenameTemplate = "{date}_{time}_{target}_{camera}_{sequence}");
+    string FilenameTemplate = "{date}_{time}_{target}_{camera}_{sequence}", string? OutputDirectory = null);
 
 public sealed record CaptureStatus(string State, DateTimeOffset? StartedTime, double ElapsedSeconds,
     long AcquiredFrames, long AcceptedFrames, long WrittenFrames, long PluginDroppedFrames,
@@ -33,6 +33,8 @@ public sealed class CaptureEngine : IAsyncDisposable {
     private readonly Func<string, FramePacket, RecordingOptions, IFrameWriter>? writerFactory;
     private readonly Func<string, long> freeSpace;
     private readonly string outputDirectory;
+    private string sessionOutputDirectory;
+    public string DefaultOutputDirectory => outputDirectory;
     private CancellationTokenSource? cancellation;
     private CancellationTokenSource? durationCancellation;
     private CancellationTokenRegistration durationRegistration;
@@ -77,6 +79,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
         Func<string, long>? freeSpace = null) {
         this.camera = camera;
         this.outputDirectory = Path.GetFullPath(outputDirectory);
+        sessionOutputDirectory = this.outputDirectory;
         this.writerFactory = writerFactory;
         this.freeSpace = freeSpace ?? AvailableDiskBytes;
         camera.ConnectionChanged += CameraConnectionChanged;
@@ -121,10 +124,11 @@ public sealed class CaptureEngine : IAsyncDisposable {
 
     public async Task<string> SaveSnapshotAsync(RecordingOptions options, CancellationToken token) {
         var image = Preview ?? throw new LuckyCaptureException("PREVIEW_UNAVAILABLE", "Acquire a preview before saving a snapshot");
-        Directory.CreateDirectory(outputDirectory);
-        if (freeSpace(outputDirectory) < image.LongLength + 32 * 1024 * 1024)
+        var directory = OutputPaths.ResolveRoot(outputDirectory, options.OutputDirectory);
+        Directory.CreateDirectory(directory);
+        if (freeSpace(directory) < image.LongLength + 32 * 1024 * 1024)
             throw new LuckyCaptureException("DISK_SPACE_LOW", "Insufficient disk space for a snapshot");
-        var path = OutputPaths.CreatePartialPath(outputDirectory, options with { Format = "png" }, camera.Metadata);
+        var path = OutputPaths.CreatePartialPath(directory, options with { Format = "png" }, camera.Metadata);
         await using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
             await file.WriteAsync(image, token).ConfigureAwait(false);
             await file.FlushAsync(token).ConfigureAwait(false);
@@ -168,8 +172,9 @@ public sealed class CaptureEngine : IAsyncDisposable {
             }
             PublishChange();
             if (options != null) {
-                Directory.CreateDirectory(outputDirectory);
-                diskBytes = freeSpace(outputDirectory);
+                sessionOutputDirectory = OutputPaths.ResolveRoot(outputDirectory, options.OutputDirectory);
+                Directory.CreateDirectory(sessionOutputDirectory);
+                diskBytes = freeSpace(sessionOutputDirectory);
                 if (diskBytes < options.MinimumFreeBytes) throw new LuckyCaptureException("DISK_SPACE_LOW", "Insufficient free disk space");
                 if (options.FrameLimit is long frames && options.Format == "ser") {
                     var estimated = (long)(Settings.Roi?.Width ?? sessionCamera.Width ?? 1) / Settings.BinX *
@@ -178,7 +183,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
                     if (estimated > diskBytes - options.MinimumFreeBytes)
                         throw new LuckyCaptureException("DISK_SPACE_LOW", "Estimated SER size exceeds available space above the reserve");
                 }
-                outputPath = OutputPaths.CreatePartialPath(outputDirectory, options, sessionCamera);
+                outputPath = OutputPaths.CreatePartialPath(sessionOutputDirectory, options, sessionCamera);
             }
             await camera.BeginAsync(token).ConfigureAwait(false);
             began = true;
@@ -225,7 +230,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
             PublishChange();
             while (!token.IsCancellationRequested) {
                 if (options != null && elapsed.Elapsed.TotalSeconds >= nextDisk) {
-                    var available = freeSpace(outputDirectory);
+                    var available = freeSpace(sessionOutputDirectory);
                     lock (sync) diskBytes = available;
                     nextDisk = elapsed.Elapsed.TotalSeconds + 1;
                     if (available < options.MinimumFreeBytes) { SetStopReason("disk_low"); break; }
@@ -356,7 +361,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
             if (path.EndsWith(".partial", StringComparison.Ordinal)) path = path[..^8];
             var sidecar = Path.ChangeExtension(path, ".json");
             var metadata = new {
-                pluginVersion = "0.2.0", pinsVersion = typeof(NINA.Equipment.Interfaces.Mediator.ICameraMediator).Assembly.GetName().Version?.ToString(),
+                pluginVersion = "0.2.1", pinsVersion = typeof(NINA.Equipment.Interfaces.Mediator.ICameraMediator).Assembly.GetName().Version?.ToString(),
                 camera = sessionCamera, image = imageGeometry, settings = Settings, source = camera.Provenance,
                 format = options.Format, codec = options.Format == "avi" ? "FFV1" : "raw",
                 aviBayerRepresentation = options.Format == "avi" && imageGeometry != null ? "Raw scalar Bayer is stored as a gray plane; CFA layout is recorded in image.pixelFormat" : null,

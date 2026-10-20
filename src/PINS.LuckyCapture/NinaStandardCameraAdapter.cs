@@ -38,18 +38,22 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
     public event Action<bool>? ConnectionChanged;
     private static readonly IProgress<ApplicationStatus> Progress = new QuietProgress();
     public StreamPath StreamCapability => ConnectedCameraStreams.Probe(mediator.GetDevice() as ICamera);
-    public int[] StreamDepthOptions {
-        get {
-            if (StreamCapability.Backend != "SVBony" || !StreamingEnabled(preparedSettings)) return [];
-            try {
-                var sdk = SvbonyConnectedStream.Binding(ConnectedCameraStreams.Unwrap(mediator.GetDevice() as ICamera)!);
-                var formats = ReflectionAccess.Field<List<NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE>>(sdk.Sdk, "formats");
-                var result = new List<int>();
-                if (formats.Any(f => f is NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE.SVB_IMG_RAW8 or NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE.SVB_IMG_Y8)) result.Add(8);
-                if (formats.Any(f => f is NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE.SVB_IMG_RAW16 or NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE.SVB_IMG_Y16)) result.Add(16);
-                return result.ToArray();
-            } catch (LuckyCaptureException) { return []; }
+    public int[] StreamDepthOptions => SupportedDepthOptions();
+    private int[] DepthOptions(CaptureSettings settings) => StreamingEnabled(settings) ? SupportedDepthOptions() : [];
+    private int[] SupportedDepthOptions() {
+        if (StreamCapability.Backend == "ZWO ASI") {
+            try { return AsiConnectedStream.DepthOptions(ConnectedCameraStreams.Unwrap(mediator.GetDevice() as ICamera)!); }
+            catch (Exception) { return []; }
         }
+        if (StreamCapability.Backend != "SVBony") return [];
+        try {
+            var sdk = SvbonyConnectedStream.Binding(ConnectedCameraStreams.Unwrap(mediator.GetDevice() as ICamera)!);
+            var formats = ReflectionAccess.Field<List<NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE>>(sdk.Sdk, "formats");
+            var result = new List<int>();
+            if (formats.Any(f => f is NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE.SVB_IMG_RAW8 or NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE.SVB_IMG_Y8)) result.Add(8);
+            if (formats.Any(f => f is NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE.SVB_IMG_RAW16 or NINA.Equipment.SDK.CameraSDKs.SVBonySDK.SVB_IMG_TYPE.SVB_IMG_Y16)) result.Add(16);
+            return result.ToArray();
+        } catch (LuckyCaptureException) { return []; }
     }
 
     public NinaStandardCameraAdapter(ICameraMediator mediator, ISequenceMediator sequences) {
@@ -67,7 +71,7 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
             return new(true, info.Name, camera?.GetType().Name, info.XSize, info.YSize,
                 info.BitDepth, info.SensorType.ToString(), double.IsFinite(info.Temperature) ? info.Temperature : null,
                 info.BinX, info.BinY, info.XSize > 0 && info.YSize > 0, info.CanShowLiveView,
-                false, StreamingEnabled(preparedSettings), StreamCapability.PreviewOnly);
+                false, StreamingEnabled(preparedSettings), StreamCapability.PreviewOnly, DeviceId: info.DeviceId);
         }
     }
 
@@ -78,7 +82,7 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
                 new("exposure", "Exposure", "Acquisition", "number", null,
                     info.ExposureMin, info.ExposureMax, Unit: "s"),
                 new("bitDepth", "Bit depth", "Acquisition", StreamDepthOptions.Length > 1 ? "enum" : "integer", preparedSettings.BitDepth ?? info.BitDepth,
-                    ReadOnly: StreamDepthOptions.Length < 2, Options: StreamDepthOptions.Select(d => (object)d).ToArray()),
+                    ReadOnly: StreamDepthOptions.Length < 2 || !StreamingEnabled(preparedSettings), Options: StreamDepthOptions.Select(d => (object)d).ToArray()),
                 new("binning", "Binning", "Acquisition", "enum", $"{info.BinX}x{info.BinY}",
                     Options: info.BinningModes.Select(b => (object)$"{b.X}x{b.Y}").ToArray())
             };
@@ -264,8 +268,8 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
         Validate(settings, info);
         if (settings.Roi != null && StreamCapability.PreviewOnly && settings.AcquisitionMode == "preview")
             throw new LuckyCaptureException("INVALID_ROI", "This JPEG preview is scaled and does not expose sensor ROI coordinates; use exposures");
-        if (settings.BitDepth is int depth && depth != info.BitDepth && (StreamCapability.Backend != "SVBony" || !StreamingEnabled(settings)))
-            throw new LuckyCaptureException("CONTROL_UNSUPPORTED", "Depth selection is only implemented for SVBony streaming");
+        if (settings.BitDepth is int depth && depth != info.BitDepth && !DepthOptions(settings).Contains(depth))
+            throw new LuckyCaptureException("CONTROL_UNSUPPORTED", "Selected raw output depth is unavailable for this camera/acquisition mode");
         preparedSettings = settings;
     }
 
