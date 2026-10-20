@@ -5,7 +5,7 @@
 - PINS: `pins`, upstream `nitr57/pins:unstable`, clean; no source changes planned.
 - LuckyCapture: `PINS.LuckyCapture`, new `acocalypso/pins.LuckyCapture:unstable` from main ed4f761.
 - TNS backend: `.tools/worktrees/tns-focus-backend`, `nitr57/N.I.N.A-Plugin-for-Touch-N-Stars:unstable`, base a90b874.
-- Frontend: `.tools/worktrees/tns-focus-frontend`, `acocalypso/Touch-N-Stars:develop` (per owner correction), based on current origin/develop 35aa6880. Original Wi-Fi checkout and browser artifacts preserved.
+- Frontend: `.tools/worktrees/tns-luckycapture`, `acocalypso/Touch-N-Stars:feat/luckycapture`, isolated from MCP work and based on the existing LuckyCapture branch 5756eb11. The two focus UI commits were removed from develop by a revert preserving its pre-feature tree. Original Wi-Fi checkout and browser artifacts are preserved.
 - Packaging definitions live in acocalypso/pins develop (existing convention; fork has no unstable integration branch).
 
 Use IFocuserMediator.GetInfo(), MoveFocuser(), MoveFocuserRelative() and cancellation tokens. FocuserVM already serializes moves, clamps known limits, manages temperature compensation, backlash decorators, settling and Halt on cancellation. Do not duplicate these. Unknown MaxStep is not zero travel: physical motion additionally requires a user-approved narrow envelope and arming lease.

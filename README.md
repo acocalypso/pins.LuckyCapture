@@ -123,5 +123,5 @@ with a live preview on phones. Advanced settings and simulation/replay are
 collapsed. A clear confirmation approves bounded physical motion before it starts.
 
 See [setup, API contract, reproduction commands and validation](docs/focus-simulation.md).
-Use LuckyCapture on `unstable`, the `acocalypso/Touch-N-Stars` frontend on `develop`,
+Use LuckyCapture on `unstable`, the `acocalypso/Touch-N-Stars` frontend on `feat/luckycapture`,
 and the TNS Linux plugin on `nitr57/N.I.N.A-Plugin-for-Touch-N-Stars:unstable`.
