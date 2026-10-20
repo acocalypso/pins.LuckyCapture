@@ -72,6 +72,7 @@ public class CameraIntegrationTests {
         using var container = new System.ComponentModel.Composition.Hosting.CompositionContainer(catalog);
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<ICameraMediator>(container, mediator);
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<ISequenceMediator>(container, Mock.Of<ISequenceMediator>());
+        System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<IFocuserMediator>(container, Mock.Of<IFocuserMediator>());
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<NINA.Plugin.Interfaces.IMessageBroker>(container, new NINA.Plugin.Messaging.MessageBroker());
         var manifest = container.GetExportedValue<NINA.Plugin.Interfaces.IPluginManifest>();
         Assert.That(manifest.Name, Is.EqualTo("PINS LuckyCapture"));

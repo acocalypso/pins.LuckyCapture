@@ -100,10 +100,23 @@ dotnet build src/PINS.LuckyCapture/PINS.LuckyCapture.csproj -c Release -r linux-
 dotnet test tests/PINS.LuckyCapture.Tests/PINS.LuckyCapture.Tests.csproj -c Release -p:GeneratePackageOnBuild=false -p:DisableImplicitSystemDrawingReference=true -p:Platform=AnyCPU -p:PlatformTarget=AnyCPU
 ```
 
-95 local tests pass; Linux ARM64 compilation and the physical checks above passed.
+The capture regression tests pass; Linux ARM64 compilation and the physical checks above passed.
 Frontend type checking and production build pass. Existing PINS System.Windows
 compatibility warnings remain. The backend and TNS UI are deployed on the Pi;
 served assets, live PNG preview and histogram passed deployment checks. Mobile browser emulation and English/German ROI explanations passed layout
 checks. Debian installation validation, broader SDK hardware coverage and
 astronomy application compatibility remain. FFmpeg decoding does not establish
 AutoStakkert/PIPP compatibility with FFV1. License: MPL-2.0.
+
+## Experimental focus and offline simulation (0.2.0, unstable)
+
+Use **Focus / Sim** for native-frame focus scores, the already-connected PINS
+focuser, or hardware-free Moon/Sun/Jupiter/Saturn simulation. Simulation defaults
+to a virtual motor. Connected hardware requires explicit arming and bounded
+travel. Software cannot verify solar safety. SER replay and PNG/TIFF stills use
+managed local fixtures; synthetic images and recordings are labelled explicitly.
+PINS core requires no changes.
+
+See [setup, API contract, reproduction commands and validation](docs/focus-simulation.md).
+Use LuckyCapture on `unstable`, the `acocalypso/Touch-N-Stars` frontend on `develop`,
+and the TNS Linux plugin on `nitr57/N.I.N.A-Plugin-for-Touch-N-Stars:unstable`.

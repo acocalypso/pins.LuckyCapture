@@ -55,6 +55,22 @@ public sealed class CaptureEngine : IAsyncDisposable {
     private long? diskBytes;
     private TaskCompletionSource change = NewChange();
     private bool disposed;
+    public Action<FramePacket>? FrameTap { get; set; }
+    public Action? ConfigurationGuard { get; set; }
+    public Action? SessionEnded { get; set; }
+    public Action? SessionStarted { get; set; }
+
+    public void ResetSource(CaptureSettings value) {
+        lock (sync) {
+            if (IsActive) throw new LuckyCaptureException("SIM_SOURCE_BUSY", "Stop capture before switching source");
+            settings = value; preview = null; histogram = null; outputPath = null; imageGeometry = null;
+            acquired = accepted = written = dropped = previewSequence = previewSkipped = bytes = 0;
+            error = stopReason = previewError = sidecarError = null;
+            started = null; elapsed = new(); acquisitionSeconds = currentFps = 0; recording = null;
+            state = camera.Metadata.Connected ? CaptureState.READY : CaptureState.DISCONNECTED;
+        }
+        PublishChange();
+    }
 
     public CaptureEngine(ILuckyCaptureCamera camera, string outputDirectory,
         Func<string, FramePacket, RecordingOptions, IFrameWriter>? writerFactory = null,
@@ -94,6 +110,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
     }
 
     public void Configure(CaptureSettings value) {
+        ConfigurationGuard?.Invoke();
         lock (sync) {
             if (IsActive || state == CaptureState.STARTING) throw new LuckyCaptureException("CAMERA_BUSY", "Stop acquisition before changing camera controls");
             camera.ValidateSettings(value);
@@ -124,6 +141,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
         await StartAsync(options, previewFps, token).ConfigureAwait(false);
 
     private async Task StartAsync(RecordingOptions? options, int previewFps, CancellationToken token) {
+        ConfigurationGuard?.Invoke();
         ObjectDisposedException.ThrowIf(disposed, this);
         if (previewFps is < 1 or > 15) throw new LuckyCaptureException("INVALID_INPUT", "Preview rate must be 1–15 FPS");
         if (options != null && (options.FrameLimit is <= 0 or > 100000000 ||
@@ -184,6 +202,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
             var sampleQueue = Channel.CreateBounded<FramePacket>(new BoundedChannelOptions(1) {
                 FullMode = BoundedChannelFullMode.Wait, SingleWriter = true, SingleReader = true
             });
+            SessionStarted?.Invoke();
             session = Task.Run(() => RunAsync(options, previewFps, recordingQueue, sampleQueue, cancellation.Token));
         } catch (Exception ex) {
             durationRegistration.Dispose(); durationCancellation?.Dispose(); durationCancellation = null;
@@ -216,6 +235,8 @@ public sealed class CaptureEngine : IAsyncDisposable {
                 var frame = FramePacket.Normalize(raw);
                 var transferred = false;
                 try {
+                    try { FrameTap?.Invoke(frame); }
+                    catch (Exception ex) { NINA.Core.Utility.Logger.Warning("Optional focus analysis skipped: " + ex.Message); }
                     if (elapsed.Elapsed.TotalSeconds >= nextPreview) {
                         var sampled = frame.Retain();
                         if (!samples.Writer.TryWrite(sampled)) { sampled.Dispose(); lock (sync) previewSkipped++; }
@@ -244,6 +265,8 @@ public sealed class CaptureEngine : IAsyncDisposable {
                 } finally { if (!transferred) frame.Dispose(); }
             }
             if (stopReason == null) SetStopReason(options?.DurationSeconds is double duration && elapsed.Elapsed.TotalSeconds >= duration ? "duration_limit" : "cancelled");
+        } catch (LuckyCaptureException ex) when (ex.Code == "REPLAY_EOF") {
+            SetStopReason("replay_eof");
         } catch (OperationCanceledException) {
             if (stopReason == null) SetStopReason(!camera.Metadata.Connected ? "camera_disconnected" :
                 options?.DurationSeconds is double duration && elapsed.Elapsed.TotalSeconds >= duration ? "duration_limit" : "cancelled");
@@ -260,6 +283,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
             await sampleTask.ConfigureAwait(false);
             try { await camera.EndAsync().ConfigureAwait(false); }
             catch (Exception ex) { lock (sync) error ??= ex.Message; }
+            SessionEnded?.Invoke();
             timerStop.Cancel();
             await statusTask.ConfigureAwait(false);
             timerStop.Dispose();
@@ -332,8 +356,8 @@ public sealed class CaptureEngine : IAsyncDisposable {
             if (path.EndsWith(".partial", StringComparison.Ordinal)) path = path[..^8];
             var sidecar = Path.ChangeExtension(path, ".json");
             var metadata = new {
-                pluginVersion = "0.1.0", pinsVersion = typeof(NINA.Equipment.Interfaces.Mediator.ICameraMediator).Assembly.GetName().Version?.ToString(),
-                camera = sessionCamera, image = imageGeometry, settings = Settings,
+                pluginVersion = "0.2.0", pinsVersion = typeof(NINA.Equipment.Interfaces.Mediator.ICameraMediator).Assembly.GetName().Version?.ToString(),
+                camera = sessionCamera, image = imageGeometry, settings = Settings, source = camera.Provenance,
                 format = options.Format, codec = options.Format == "avi" ? "FFV1" : "raw",
                 aviBayerRepresentation = options.Format == "avi" && imageGeometry != null ? "Raw scalar Bayer is stored as a gray plane; CFA layout is recorded in image.pixelFormat" : null,
                 options.Target, options.Filter, startedUtc = started, endedUtc = DateTimeOffset.UtcNow, statistics = Status,

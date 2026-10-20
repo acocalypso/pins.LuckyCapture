@@ -9,14 +9,18 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) {
         NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.Strict
     };
-    private readonly NinaStandardCameraAdapter camera;
+    private readonly ILuckyCaptureCamera camera;
+    private readonly FocusWorkspace? focus;
+    private readonly FocusApi? focusApi;
     private readonly CaptureEngine engine;
     private readonly IMessageBroker broker;
 
-    public LuckyCaptureApi(NinaStandardCameraAdapter camera, CaptureEngine engine, IMessageBroker broker) {
+    public LuckyCaptureApi(ILuckyCaptureCamera camera, CaptureEngine engine, IMessageBroker broker, FocusWorkspace? focus = null) {
         this.camera = camera;
         this.engine = engine;
         this.broker = broker;
+        this.focus = focus;
+        if (focus != null) focusApi = new(focus, engine);
         broker.Subscribe(Topic, this);
     }
 
@@ -35,7 +39,8 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
             var result = await ExecuteAsync(operation, payload, token).ConfigureAwait(false);
             reply.TrySetResult((200, "application/json", JsonSerializer.SerializeToUtf8Bytes(result, Json)));
         } catch (LuckyCaptureException ex) {
-            reply.TrySetResult((ex.Code == "CAMERA_BUSY" ? 409 : 400, "application/json",
+            var status = ex.Code.EndsWith("_BUSY", StringComparison.Ordinal) ? 409 : ex.Code is "FILE_NOT_FOUND" ? 404 : 400;
+            reply.TrySetResult((status, "application/json",
                 JsonSerializer.SerializeToUtf8Bytes(new { code = ex.Code, message = ex.Message }, Json)));
         } catch (JsonException) {
             reply.TrySetResult((400, "application/json", JsonSerializer.SerializeToUtf8Bytes(new { code = "INVALID_INPUT", message = "Invalid request JSON" }, Json)));
@@ -50,6 +55,9 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
     }
 
     public async Task<object> ExecuteAsync(string operation, string payload, CancellationToken token) {
+        if (operation.StartsWith("focus/", StringComparison.Ordinal) || operation.StartsWith("simulation/", StringComparison.Ordinal))
+            return (focusApi ?? throw new LuckyCaptureException("FOCUS_UNSUPPORTED", "This plugin does not provide focus/simulation services")).Execute(operation, payload);
+        if (operation is "preview/stop" or "recording/stop") focus?.CancelAndDisarm();
         if (operation.StartsWith("controls/set/", StringComparison.Ordinal)) {
             if (engine.IsActive) throw new LuckyCaptureException("CAMERA_BUSY", "Stop acquisition before changing controls");
             using var document = JsonDocument.Parse(payload);
@@ -74,10 +82,13 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
             return new { settings = engine.Settings, controls = camera.Controls };
         }
         switch (operation) {
-            case "health": return new { plugin = "PINS LuckyCapture", version = "0.1.0", available = true };
+            case "health": return new { plugin = "PINS LuckyCapture", version = "0.2.0", available = true };
             case "camera": return camera.Metadata;
             case "controls": return camera.Controls;
             case "capabilities": return new {
+                focus = focus != null, simulation = focus != null, focusApiVersion = focus == null ? 0 : 2,
+                sourceKind = camera.Metadata.SourceKind, simulationActive = camera.Metadata.SourceKind == "simulated",
+                physicalCameraConnected = camera.Metadata.PhysicalCameraConnected ?? camera.Metadata.Connected,
                 cameraConnected = camera.Metadata.Connected, exclusiveOwnership = camera.Metadata.ExclusiveOwnershipSupported,
                 ownership = "cooperative_capture_block",
                 ownershipLimit = "Acquisition callers must honor PINS capture blocks; direct driver access is unguarded",
