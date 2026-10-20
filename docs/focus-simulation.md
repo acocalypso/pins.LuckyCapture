@@ -167,3 +167,9 @@ tests. Planet masks retain rings and reject clipped targets; generic tracking,
 mount recentering, MFGS/DCT alternatives and optical calibration are not implemented.
 Manual assisted focus remains available when autofocus confidence is insufficient.
 Cancellation leaves actual position and never starts an unapproved return move.
+
+Final local checks: 137 LuckyCapture tests, all 325 TNS backend tests (including
+19 new HTTP/broker forwarding cases) and 32 focused frontend tests passed.
+Frontend type checking and production build passed on develop. Desktop mouse,
+iPhone WebKit layout and Android Chromium touch ROI checks passed; 390 px layout
+had no horizontal overflow. Mobile tab typography was adjusted for German labels.
