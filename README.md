@@ -110,12 +110,17 @@ AutoStakkert/PIPP compatibility with FFV1. License: MPL-2.0.
 
 ## Experimental focus and offline simulation (0.2.0, unstable)
 
-Use **Focus / Sim** for native-frame focus scores, the already-connected PINS
+Use **Focus** for native-frame focus scores, the already-connected PINS
 focuser, or hardware-free Moon/Sun/Jupiter/Saturn simulation. Simulation defaults
 to a virtual motor. Connected hardware requires explicit arming and bounded
 travel. Software cannot verify solar safety. SER replay and PNG/TIFF stills use
 managed local fixtures; synthetic images and recordings are labelled explicitly.
 PINS core requires no changes.
+
+Choose the target and press **Find best focus**; preview and analysis start
+automatically. **Manual** offers fine/normal/coarse inward/outward adjustments
+with a live preview on phones. Advanced settings and simulation/replay are
+collapsed. A clear confirmation approves bounded physical motion before it starts.
 
 See [setup, API contract, reproduction commands and validation](docs/focus-simulation.md).
 Use LuckyCapture on `unstable`, the `acocalypso/Touch-N-Stars` frontend on `develop`,

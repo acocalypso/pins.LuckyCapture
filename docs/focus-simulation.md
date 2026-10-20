@@ -27,7 +27,13 @@ Procedural fixtures are generated independently, bundled as code, require no net
 
 ## Use on the Pi
 
-Open LuckyCapture, choose **Focus / Sim**, then **SIMULATION** as image source.
+Open LuckyCapture and choose **Focus**. For normal imaging, select your target
+and press **Find best focus**. The UI enables analysis and starts preview, then
+asks for physical-motion approval if needed before running the bounded search.
+Use **Manual** for fine/normal/coarse adjustments; phones show a live preview
+alongside those controls. Expert settings and graphs expand on demand.
+
+For offline practice, expand **Simulation and replay**, then choose **SIMULATION** as image source.
 Choose a target and virtual focuser, apply settings and press **Preview**. Frames
 feed the ordinary preview, histogram, native focus analysis and recording pipeline.
 Stop preview before editing the scene. Scene settings collapse during preview.
@@ -41,8 +47,9 @@ seven frames/point, best fraction 0.5 and flush 250 ms. Production defaults use
 is rejected. Scores cannot be compared across scenes, ROIs or exposure changes.
 
 Selecting the already-connected PINS focuser never connects or moves it. Check
-readback, approve a narrow minimum/maximum and acknowledge real motion. Arm
-**after** starting preview: capture starts disarm. A browser-owned 15-second lease
+readback and approve the exact range shown in the movement confirmation. The UI
+starts preview before arming automatically: capture starts disarm. API clients
+must also arm after starting preview. A browser-owned 15-second lease
 is refreshed every four seconds and never persisted. Stop, disconnect, source or
 profile changes disarm. Expiry cancels owned movement. Virtual motor disconnect,
 stall and readback faults are available under advanced simulation settings; Stop
