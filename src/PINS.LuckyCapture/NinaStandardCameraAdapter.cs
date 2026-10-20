@@ -191,7 +191,8 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
             SubSambleRectangle = settings.Roi is { } r ? new ObservableRectangle(r.X, r.Y, r.Width, r.Height) : null
         };
         NINA.Image.Interfaces.IExposureData exposure;
-        if (info.CanShowLiveView && settings.AcquisitionMode != "exposures") {
+        if (info.CanShowLiveView && settings.AcquisitionMode != "exposures" &&
+            (StreamCapability.Backend != "Atik" || AtikConnectedStream.SupportsExposure(settings.ExposureSeconds))) {
             if (video == null) {
                 videoSettings = settings;
                 videoCancellation = CancellationTokenSource.CreateLinkedTokenSource(token, disconnectToken);
@@ -260,6 +261,7 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
     private bool StreamingEnabled(CaptureSettings settings) {
         var path = StreamCapability;
         return settings.AcquisitionMode != "exposures" && path.Available &&
+            (path.Backend != "Atik" || AtikConnectedStream.SupportsExposure(settings.ExposureSeconds)) &&
             (!path.PreviewOnly || settings.AcquisitionMode == "preview") &&
             (path.Mode == "public_live_view" || path.HardwareValidated || settings.AllowExperimentalStreaming) &&
             (!path.RequiresDriverReconnect || settings.AllowDriverReconnect);

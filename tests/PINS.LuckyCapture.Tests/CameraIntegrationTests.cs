@@ -15,6 +15,14 @@ using NUnit.Framework;
 namespace PINS.LuckyCapture.Tests;
 
 public class CameraIntegrationTests {
+    [TestCase(0.0002, false)]
+    [TestCase(0.0015, false)]
+    [TestCase(0.001, true)]
+    [TestCase(0.02, true)]
+    [TestCase(double.NaN, false)]
+    public void AtikFastModeOnlyAcceptsWholeMilliseconds(double seconds, bool supported) =>
+        Assert.That(AtikConnectedStream.SupportsExposure(seconds), Is.EqualTo(supported));
+
     [Test]
     public async Task PublicBlockReservationHasOneWinnerAndNeverConnectsCamera() {
         var (mediator, handler, _) = Create();
@@ -81,9 +89,13 @@ public class CameraIntegrationTests {
         handler.Verify(h => h.Connect(), Times.Never);
     }
 
-    [Test]
-    public async Task OneFramePreservesPixelsDepthAndSequenceSettings() {
+    [TestCase(0.01)]
+    [TestCase(0.001)]
+    [TestCase(0.0002)]
+    [TestCase(0.00001)]
+    public async Task OneFramePreservesPixelsDepthAndSequenceSettings(double exposureSeconds) {
         var (mediator, handler, info) = Create();
+        info.ExposureMin = 0.000001;
         var pixels = new ushort[] { 0, 4095, 1024, 2048 };
         info.XSize = info.YSize = 2;
         info.CanSubSample = false;
@@ -94,7 +106,7 @@ public class CameraIntegrationTests {
         handler.Setup(h => h.Download(It.IsAny<CancellationToken>())).ReturnsAsync(exposure.Object);
         using var adapter = new NinaStandardCameraAdapter(mediator, Mock.Of<ISequenceMediator>());
         await adapter.BeginAsync(default);
-        var frame = await adapter.AcquireAsync(new(0.01, 42, 5, Roi: new(0, 0, 2, 2)), default);
+        var frame = await adapter.AcquireAsync(new(exposureSeconds, 42, 5, Roi: new(0, 0, 2, 2)), default);
         Assert.Multiple(() => {
             Assert.That(frame.Pixels, Is.SameAs(pixels));
             Assert.That(frame.BitDepth, Is.EqualTo(12));
@@ -102,7 +114,7 @@ public class CameraIntegrationTests {
             Assert.That(adapter.Metadata.ExclusiveOwnershipSupported, Is.False);
         });
         handler.Verify(h => h.Capture(It.Is<CaptureSequence>(s => s.Gain == 42 && s.Offset == 5 &&
-            !s.EnableSubSample && s.ExposureTime == 0.01), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()), Times.Once);
+            !s.EnableSubSample && s.ExposureTime == exposureSeconds), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()), Times.Once);
         Assert.That(adapter.Metadata.RoiSupported, Is.True);
         Assert.That(adapter.RoiMode, Is.EqualTo("software"));
         await adapter.EndAsync();

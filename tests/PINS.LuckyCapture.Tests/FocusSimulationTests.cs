@@ -9,6 +9,15 @@ namespace PINS.LuckyCapture.Tests;
 
 [TestFixture]
 public class FocusSimulationTests {
+    [Test]
+    public void SimulationAcceptsMicrosecondExposuresAndRejectsValuesBelowItsReportedMinimum() {
+        using var temporary = new TemporaryDirectory();
+        using var camera = new SimulatedLuckyCaptureCamera(() => new VirtualFocusActuator(), new(temporary.Path));
+        Assert.DoesNotThrow(() => camera.ValidateSettings(new(ExposureSeconds: 0.0002)));
+        Assert.DoesNotThrow(() => camera.ValidateSettings(new(ExposureSeconds: 0.000001)));
+        Assert.Throws<LuckyCaptureException>(() => camera.ValidateSettings(new(ExposureSeconds: 0.0000001)));
+    }
+
     [TestCase("moon")]
     [TestCase("jupiter")]
     [TestCase("sun-white")]

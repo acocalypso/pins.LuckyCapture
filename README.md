@@ -44,6 +44,13 @@ Use GET health/camera/capabilities/controls/settings/status, PUT settings,
 POST preview/start, recording/start, recording/stop, or snapshot. Preview returns
 PNG bytes; histogram returns JSON; events provides SSE status updates.
 
+The exposure control offers milliseconds or seconds, including sub-millisecond
+presets for bright solar and lunar targets. 20 ms is the default, not a fixed
+minimum. Every camera uses the exposure range reported by its driver; unsupported
+presets are disabled. Atik exposures outside its whole-millisecond fast-mode
+range use ordinary native exposures. The API continues to accept `exposureSeconds` in seconds
+(for example, `0.0002` means 0.2 ms).
+
 Example settings:
 
 ```json

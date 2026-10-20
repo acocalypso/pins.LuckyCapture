@@ -1,6 +1,7 @@
 namespace PINS.LuckyCapture;
 
 public sealed class SimulatedLuckyCaptureCamera(Func<IFocusActuator> actuator, SimulationMedia media) : ILuckyCaptureCamera, IDisposable {
+    public const double MinimumExposureSeconds = 0.000001;
     public event Action<bool>? ConnectionChanged;
     public SimulationSettings Settings { get; private set; } = new();
     private double[]? scene;
@@ -26,7 +27,7 @@ public sealed class SimulatedLuckyCaptureCamera(Func<IFocusActuator> actuator, S
         Settings.Source == "procedural" && Settings.PixelFormat != "Mono" ? Settings.PixelFormat : "Monochrome",
         null, 1, 1, true, false, false, true, SourceKind: "simulated");
     public IReadOnlyList<ControlDescriptor> Controls => [
-        new("exposure", "Synthetic exposure", "Simulation", "number", 0.02, 0.001, 0.5),
+        new("exposure", "Synthetic exposure", "Simulation", "number", 0.02, MinimumExposureSeconds, 0.5),
         new("binning", "Binning", "Simulation", "enum", "1x1", Options: ["1x1"]),
         new("bitDepth", "Native depth", "Simulation", "integer", Depth, ReadOnly: true)
     ];
@@ -70,7 +71,7 @@ public sealed class SimulatedLuckyCaptureCamera(Func<IFocusActuator> actuator, S
 
     public void ValidateSettings(CaptureSettings value) {
         if (value.BinX != 1 || value.BinY != 1 || value.Gain != null || value.Offset != null ||
-            !double.IsFinite(value.ExposureSeconds) || value.ExposureSeconds is < 0.001 or > 0.5 ||
+            !double.IsFinite(value.ExposureSeconds) || value.ExposureSeconds < MinimumExposureSeconds || value.ExposureSeconds > 0.5 ||
             value.BitDepth != null && value.BitDepth != Depth)
             throw new LuckyCaptureException("CONTROL_UNSUPPORTED", "Simulation supports exposure scaling, native depth and 1x1 binning; no physical gain/offset controls");
         if (value.Roi is { } r && (r.X < 0 || r.Y < 0 || r.Width < 1 || r.Height < 1 ||
