@@ -175,6 +175,54 @@ public class CameraIntegrationTests {
     }
 
     [Test]
+    public async Task PreviewCanStopAndRestartWithoutLeavingPinsExposing() {
+        var (mediator, handler, info) = Create();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        handler.Setup(h => h.Capture(It.IsAny<CaptureSequence>(), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()))
+            .Returns<CaptureSequence, CancellationToken, IProgress<ApplicationStatus>>(async (_, token, _) => {
+                info.IsExposing = true;
+                started.TrySetResult();
+                // Match PINS Capture: cancellation exits before IsExposing is reset.
+                await Task.Delay(Timeout.Infinite, token);
+            });
+        handler.Setup(h => h.AbortExposure()).Callback(() => {
+            Assert.That(mediator.IsFreeToCapture(new object()), Is.False, "Abort must happen before releasing ownership");
+            info.IsExposing = false;
+        });
+        using var adapter = new NinaStandardCameraAdapter(mediator, Mock.Of<ISequenceMediator>());
+        await using var engine = new CaptureEngine(adapter, System.IO.Path.GetTempPath());
+        for (var cycle = 0; cycle < 3; cycle++) {
+            started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            await engine.StartPreviewAsync();
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await engine.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.That(engine.Status.State, Is.EqualTo("READY"));
+            Assert.That(info.IsExposing, Is.False);
+            Assert.That(mediator.IsFreeToCapture(new object()), Is.True);
+        }
+        handler.Verify(h => h.AbortExposure(), Times.Exactly(3));
+    }
+
+    [Test]
+    public async Task FailedOwnedExposureIsAbortedButUnrelatedBusyCameraIsLeftAlone() {
+        var (mediator, handler, info) = Create();
+        handler.Setup(h => h.Capture(It.IsAny<CaptureSequence>(), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()))
+            .Callback(() => info.IsExposing = true).ThrowsAsync(new InvalidOperationException("Driver failure"));
+        handler.Setup(h => h.AbortExposure()).Callback(() => info.IsExposing = false);
+        using var adapter = new NinaStandardCameraAdapter(mediator, Mock.Of<ISequenceMediator>());
+        info.IsExposing = true;
+        Assert.ThrowsAsync<LuckyCaptureException>(() => adapter.BeginAsync(default));
+        await adapter.EndAsync();
+        handler.Verify(h => h.AbortExposure(), Times.Never);
+        info.IsExposing = false;
+        await adapter.BeginAsync(default);
+        Assert.ThrowsAsync<InvalidOperationException>(() => adapter.AcquireAsync(new(), default));
+        handler.Verify(h => h.AbortExposure(), Times.Once);
+        Assert.That(info.IsExposing, Is.False);
+        await adapter.EndAsync();
+    }
+
+    [Test]
     public async Task EndCancelsAndAwaitsOwnedFrameBeforeReleasingReservation() {
         var (mediator, handler, _) = Create();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

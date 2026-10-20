@@ -207,9 +207,20 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
         } else {
             if (info.IsExposing || info.LiveViewEnabled)
                 throw new LuckyCaptureException("CAMERA_BUSY", "Another camera acquisition is active");
-            await mediator.Capture(capture, linked.Token, Progress).ConfigureAwait(false);
-            linked.Token.ThrowIfCancellationRequested();
-            exposure = await mediator.Download(linked.Token).ConfigureAwait(false);
+            var captureDevice = mediator.GetDevice();
+            try {
+                await mediator.Capture(capture, linked.Token, Progress).ConfigureAwait(false);
+                linked.Token.ThrowIfCancellationRequested();
+                exposure = await mediator.Download(linked.Token).ConfigureAwait(false);
+            } catch {
+                // PINS can leave IsExposing set when Capture exits on cancellation.
+                // Abort only our interrupted exposure, while still holding our reservation.
+                // The public mediator also resets and broadcasts the camera's exposure state.
+                if (ownsCaptureBlock && ReferenceEquals(captureDevice, mediator.GetDevice()) &&
+                    mediator.GetInfo() is { Connected: true, IsExposing: true })
+                    mediator.AbortExposure();
+                throw;
+            }
         }
         var arrival = sessionClock!.Now;
         linked.Token.ThrowIfCancellationRequested();
