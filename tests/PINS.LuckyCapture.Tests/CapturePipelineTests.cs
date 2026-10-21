@@ -174,6 +174,47 @@ public class CapturePipelineTests {
         } finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
 
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task CaptureLogAndJsonContainActualTimingAndOnlyReportedTemperature(bool hasTemperature) {
+        var folder = Path.Combine(Path.GetTempPath(), "LuckyCapture-metadata-" + Guid.NewGuid());
+        var camera = new FakeCamera { SensorTemperature = hasTemperature ? -12.5 : null };
+        try {
+            await using var engine = new CaptureEngine(camera, folder,
+                (path, frame, options) => RecordingWriters.Create(path, frame, options, camera.Metadata));
+            await engine.StartRecordingAsync(new(FrameLimit: 3, Target: "Moon", Filter: "IR"));
+            await Wait(() => !engine.IsActive);
+            Assert.That(engine.Status.State, Is.EqualTo("READY"));
+            Assert.That(engine.Status.SidecarError, Is.Null);
+            var path = engine.Status.OutputPath!;
+            using var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.ChangeExtension(path, ".json")));
+            var metadata = json.RootElement;
+            Assert.That(metadata.GetProperty("serTimestampsPresent").GetBoolean(), Is.True);
+            Assert.That(metadata.GetProperty("target").GetString(), Is.EqualTo("Moon"));
+            Assert.That(metadata.GetProperty("filter").GetString(), Is.EqualTo("IR"));
+            var bytes = File.ReadAllBytes(path);
+            var trailer = 178 + 3 * 8 * 8 * 2;
+            var first = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(trailer, 8));
+            var last = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(trailer + 16, 8));
+            Assert.That(metadata.GetProperty("firstWrittenFrameUtc").GetDateTimeOffset().UtcTicks, Is.EqualTo(first));
+            Assert.That(metadata.GetProperty("lastWrittenFrameUtc").GetDateTimeOffset().UtcTicks, Is.EqualTo(last));
+            Assert.That(metadata.GetProperty("recordedAverageFps").GetDouble(), Is.EqualTo(2.0 * TimeSpan.TicksPerSecond / (last - first)).Within(.00001));
+            var temperature = metadata.GetProperty("sensorTemperature");
+            var text = File.ReadAllText(Path.ChangeExtension(path, ".txt"));
+            Assert.That(text, Does.Contain("Target=Moon").And.Contain("Filter=IR").And.Contain("Timestamp meaning=Host frame arrival/completion"));
+            if (hasTemperature) {
+                Assert.That(temperature.GetProperty("start").GetDouble(), Is.EqualTo(-12.5));
+                Assert.That(temperature.GetProperty("end").GetDouble(), Is.EqualTo(-12.5 + camera.Calls));
+                Assert.That(temperature.GetProperty("samples").GetInt64(), Is.GreaterThanOrEqualTo(2));
+                Assert.That(text, Does.Contain("Sensor temperature start (C)=-12.5"));
+            } else {
+                Assert.That(temperature.GetProperty("start").ValueKind, Is.EqualTo(System.Text.Json.JsonValueKind.Null));
+                Assert.That(temperature.GetProperty("samples").GetInt64(), Is.Zero);
+                Assert.That(text, Does.Contain("Sensor temperature start (C)=Unavailable"));
+            }
+        } finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+    }
+
     private static async Task Wait(Func<bool> done) {
         var timer = Stopwatch.StartNew();
         while (!done()) {
@@ -215,7 +256,8 @@ public class CapturePipelineTests {
         public int Calls, BeginCalls, EndCalls;
         public bool NativeVideo;
         public bool FailAcquisition;
-        public CameraMetadata Metadata => new(connected, "fake", "test", 8, 8, 16, "Monochrome", null, 1, 1, false, false, true, NativeVideo);
+        public double? SensorTemperature;
+        public CameraMetadata Metadata => new(connected, "fake", "test", 8, 8, 16, "Monochrome", SensorTemperature is double t ? t + Calls : null, 1, 1, false, false, true, NativeVideo);
         public IReadOnlyList<ControlDescriptor> Controls => [];
         public void ValidateSettings(CaptureSettings settings) { }
         public Task BeginAsync(CancellationToken token) { BeginCalls++; return Task.CompletedTask; }

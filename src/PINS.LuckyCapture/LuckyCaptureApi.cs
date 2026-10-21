@@ -82,7 +82,7 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
             return new { settings = engine.Settings, controls = camera.Controls };
         }
         switch (operation) {
-            case "health": return new { plugin = "PINS LuckyCapture", version = "0.2.1", available = true };
+            case "health": return new { plugin = "PINS LuckyCapture", version = "0.2.2", available = true };
             case "camera": return camera.Metadata;
             case "controls": return camera.Controls;
             case "capabilities": return new {

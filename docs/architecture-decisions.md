@@ -21,7 +21,8 @@ overflow. Receiver-tap skips are separate; SDK/server-internal losses can remain
 unknown. Actual precision, CFA phase and RGB channel order are preserved.
 
 SER uses raw frames, historical endian flag 0, periodic count checkpoints and
-clean finalization. Timestamp trailers are explicitly omitted. Recovery copies
+clean finalization. Since 0.2.2, UTC frame timestamp trailers are finalized from a
+bounded disk spool; the validity flag is committed after the trailer is durable. Recovery copies
 complete frames into a new file without modifying the original. AVI uses system
 FFmpeg FFV1 plus independent decoded frame-count checks. Bayer AVI remains a gray
 raw plane with CFA in JSON. Host times use monotonic elapsed time anchored to UTC;

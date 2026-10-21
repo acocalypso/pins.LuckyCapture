@@ -71,7 +71,7 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
             return new(true, info.Name, camera?.GetType().Name, info.XSize, info.YSize,
                 info.BitDepth, info.SensorType.ToString(), double.IsFinite(info.Temperature) ? info.Temperature : null,
                 info.BinX, info.BinY, info.XSize > 0 && info.YSize > 0, info.CanShowLiveView,
-                false, StreamingEnabled(preparedSettings), StreamCapability.PreviewOnly, DeviceId: info.DeviceId);
+                false, StreamingEnabled(preparedSettings), StreamCapability.PreviewOnly, DeviceId: info.DeviceId, DriverVersion: info.DriverVersion);
         }
     }
 

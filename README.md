@@ -152,3 +152,26 @@ host (including a mounted SSD). Blank uses the existing default, shown in the UI
 `PINS_LUCKYCAPTURE_DIRECTORY` still overrides that default at startup. The service
 user needs write permission. Subfolders remain relative to the selected root and
 disk-space checks use the selected filesystem. Saved PNGs use that root too.
+
+## SER timestamps and capture logs (0.2.2)
+
+Completed SER files include a standard per-frame UTC timestamp trailer. SerPlayer
+can derive playback cadence from these timestamps instead of its 50 FPS fallback.
+Times describe host frame arrival/completion, not hardware exposure-start timing.
+Dropped frames retain their real gaps; one-frame clips have no measurable FPS.
+
+Each SER/AVI capture also writes `.json` and readable `.txt` companions with camera
+and driver identity, native layout, exposure, gain/offset, supported USB setting,
+ROI/binning, target/filter, recorded frame count and timing/FPS, and reported sensor
+temperature at start/end plus sampled min/max/mean. Unsupported temperature is
+marked unavailable. The temperature samples use existing PINS telemetry; there
+is no sensor-control change or independent connection.
+
+A bounded disk spool holds timestamps while recording. Successful finalization
+appends the trailer and removes the spool. An interrupted `.ser.partial` and its
+`.timestamps.partial` companion should be kept together for recovery with timing.
+Recovery also accepts finalized stamped files and legacy files without stamps;
+it does not invent missing historical timestamps. Disk checks reserve space for
+the trailer as well as its temporary spool. Existing files are not rewritten.
+
+See [SER timing and metadata notes](docs/ser-timing-and-metadata.md).

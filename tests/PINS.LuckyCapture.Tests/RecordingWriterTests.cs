@@ -60,8 +60,9 @@ public class RecordingWriterTests {
             Assert.That(BinaryPrimitives.ReadInt32LittleEndian(file.AsSpan(30, 4)), Is.EqualTo(4));
             Assert.That(BinaryPrimitives.ReadInt32LittleEndian(file.AsSpan(34, 4)), Is.EqualTo(depth));
             Assert.That(BinaryPrimitives.ReadInt32LittleEndian(file.AsSpan(38, 4)), Is.EqualTo(4));
-            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan(162, 8)), Is.Zero);
-            Assert.That(file.AsSpan(178).ToArray(), Is.EqualTo(expected.ToArray()));
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan(162, 8)), Is.GreaterThan(0));
+            Assert.That(file.AsSpan(178, expected.Count).ToArray(), Is.EqualTo(expected.ToArray()));
+            Assert.That(file.Length, Is.EqualTo(178 + expected.Count + 4 * 8));
         });
         var pixelFormat = format switch {
             "Mono" => depth == 8 ? "gray" : "gray16le",
@@ -114,7 +115,7 @@ public class RecordingWriterTests {
             await writer.FinishAsync(default);
         }
         Assert.Throws<IOException>(() => new SerWriter(path, frame));
-        Assert.That(new FileInfo(path).Length, Is.EqualTo(194));
+        Assert.That(new FileInfo(path).Length, Is.EqualTo(202));
         using var rgb16 = FramePacket.FromRaw(2, 2, 16, "RGB", new byte[24]);
         Assert.Throws<LuckyCaptureException>(() => FfmpegAviWriter.InputPixelFormat(rgb16));
     }

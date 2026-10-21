@@ -49,7 +49,13 @@ public sealed class CaptureEngine : IAsyncDisposable {
     private long acquired, accepted, written, dropped, previewSkipped, bytes, previewSequence, revision;
     private double currentFps;
     private string? outputPath, stopReason, error, previewError, sidecarError;
-    private CameraMetadata? sessionCamera;
+    private CameraMetadata? sessionCamera, cameraAtEnd;
+    private IReadOnlyList<ControlDescriptor>? sessionControls;
+    private DateTimeOffset? firstWrittenFrameUtc, lastWrittenFrameUtc;
+    private double? temperatureStart, temperatureEnd, temperatureMinimum, temperatureMaximum;
+    private double temperatureTotal;
+    private long temperatureSamples;
+    private bool serTimestampsPresent;
     private object? imageGeometry;
     private IFrameWriter? activeWriter;
     private byte[]? preview;
@@ -167,8 +173,15 @@ public sealed class CaptureEngine : IAsyncDisposable {
                 state = CaptureState.STARTING; recording = options; error = null; stopReason = null;
                 acquired = accepted = written = dropped = bytes = previewSkipped = previewSequence = 0;
                 acquisitionSeconds = currentFps = 0; outputPath = null; previewError = sidecarError = null;
-                imageGeometry = null; sessionCamera = camera.Metadata;
+                imageGeometry = null; sessionCamera = camera.Metadata; cameraAtEnd = null; sessionControls = null;
+                firstWrittenFrameUtc = lastWrittenFrameUtc = null; serTimestampsPresent = false;
+                temperatureStart = temperatureEnd = temperatureMinimum = temperatureMaximum = null;
+                temperatureTotal = 0; temperatureSamples = 0;
                 preview = null; histogram = null; elapsed = new(); started = null;
+            }
+            SampleTemperature(sessionCamera, initial: true);
+            if (options != null) {
+                try { sessionControls = camera.Controls; } catch (Exception ex) { NINA.Core.Utility.Logger.Warning("Capture control metadata unavailable: " + ex.Message); }
             }
             PublishChange();
             if (options != null) {
@@ -179,7 +192,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
                 if (options.FrameLimit is long frames && options.Format == "ser") {
                     var estimated = (long)(Settings.Roi?.Width ?? sessionCamera.Width ?? 1) / Settings.BinX *
                         (Settings.Roi?.Height ?? sessionCamera.Height ?? 1) / Settings.BinY *
-                        (sessionCamera.BitDepth > 8 ? 2 : 1) * frames + 178;
+                        (sessionCamera.BitDepth > 8 ? 2 : 1) * frames + 178 + frames * 16;
                     if (estimated > diskBytes - options.MinimumFreeBytes)
                         throw new LuckyCaptureException("DISK_SPACE_LOW", "Estimated SER size exceeds available space above the reserve");
                 }
@@ -233,7 +246,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
                     var available = freeSpace(sessionOutputDirectory);
                     lock (sync) diskBytes = available;
                     nextDisk = elapsed.Elapsed.TotalSeconds + 1;
-                    if (available < options.MinimumFreeBytes) { SetStopReason("disk_low"); break; }
+                    if (available - options.MinimumFreeBytes < (activeWriter is SerWriter ser ? ser.FramesWritten * 8 : 0)) { SetStopReason("disk_low"); break; }
                 }
                 var raw = await camera.AcquireAsync(Settings, token).ConfigureAwait(false);
                 lock (sync) acquired++;
@@ -286,6 +299,8 @@ public sealed class CaptureEngine : IAsyncDisposable {
             try { await writerTask.ConfigureAwait(false); }
             catch (Exception ex) { lock (sync) { error = ex.Message; stopReason = "writer_error"; } }
             await sampleTask.ConfigureAwait(false);
+            try { cameraAtEnd = camera.Metadata; } catch { cameraAtEnd = null; }
+            SampleTemperature(cameraAtEnd, final: true);
             try { await camera.EndAsync().ConfigureAwait(false); }
             catch (Exception ex) { lock (sync) error ??= ex.Message; }
             SessionEnded?.Invoke();
@@ -295,11 +310,13 @@ public sealed class CaptureEngine : IAsyncDisposable {
             while (queue.Reader.TryRead(out var remaining)) remaining.Dispose();
             lock (sync) {
                 if (options != null) dropped = acquired - written;
-                elapsed.Stop(); currentFps = 0; state = error == null ? CaptureState.READY : CaptureState.ERROR;
+                elapsed.Stop(); currentFps = 0;
+                // Stay FINALIZING until the capture's companion files are complete.
                 // No writer/file was created if acquisition failed before the first frame.
                 if (outputPath != null && !File.Exists(outputPath)) outputPath = null;
             }
             if (options != null && outputPath != null && written > 0 && File.Exists(outputPath)) await SaveSidecarAsync(options).ConfigureAwait(false);
+            lock (sync) state = error == null ? CaptureState.READY : CaptureState.ERROR;
             PublishChange();
         }
     }
@@ -321,7 +338,11 @@ public sealed class CaptureEngine : IAsyncDisposable {
                     }
                     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                     await writer.WriteAsync(frame, timeout.Token).ConfigureAwait(false);
-                    lock (sync) { written = writer.FramesWritten; bytes = writer.BytesWritten; }
+                    lock (sync) {
+                        written = writer.FramesWritten; bytes = writer.BytesWritten;
+                        firstWrittenFrameUtc ??= frame.Timestamp.ToUniversalTime();
+                        lastWrittenFrameUtc = frame.Timestamp.ToUniversalTime();
+                    }
                 }
             }
             if (writer != null) {
@@ -344,7 +365,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
                         lock (sync) { written = writer.FramesWritten; bytes = writer.BytesWritten; }
                     } catch (Exception ex) { NINA.Core.Utility.Logger.Error(ex); }
                 }
-                lock (sync) { written = writer.FramesWritten; bytes = writer.BytesWritten; activeWriter = null; }
+                lock (sync) { written = writer.FramesWritten; bytes = writer.BytesWritten; activeWriter = null; serTimestampsPresent = writer is SerWriter ser && ser.HasTimestamps; }
                 await writer.DisposeAsync().ConfigureAwait(false);
                 if (finished && File.Exists(outputPath)) {
                     var final = outputPath![..^8];
@@ -360,13 +381,25 @@ public sealed class CaptureEngine : IAsyncDisposable {
             var path = outputPath!;
             if (path.EndsWith(".partial", StringComparison.Ordinal)) path = path[..^8];
             var sidecar = Path.ChangeExtension(path, ".json");
+            var temperature = new { unit = "Celsius", source = "PINS connected-camera telemetry", start = temperatureStart,
+                end = temperatureEnd, minimum = temperatureMinimum, maximum = temperatureMaximum,
+                mean = temperatureSamples > 0 ? (double?)(temperatureTotal / temperatureSamples) : null,
+                samples = temperatureSamples };
+            var recordedSpan = firstWrittenFrameUtc != null && lastWrittenFrameUtc != null
+                ? (lastWrittenFrameUtc.Value - firstWrittenFrameUtc.Value).TotalSeconds : 0;
+            var recordedFps = written > 1 && recordedSpan > 0 ? (double?)((written - 1) / recordedSpan) : null;
+            const string timestampMeaning = "Host frame arrival/completion, not sensor exposure time. UTC timestamps use a monotonic session clock where supported by the acquisition path.";
+            var pluginVersion = typeof(CaptureEngine).Assembly.GetName().Version?.ToString(3) ?? "unknown";
             var metadata = new {
-                pluginVersion = "0.2.1", pinsVersion = typeof(NINA.Equipment.Interfaces.Mediator.ICameraMediator).Assembly.GetName().Version?.ToString(),
-                camera = sessionCamera, image = imageGeometry, settings = Settings, source = camera.Provenance,
+                pluginVersion, pinsVersion = typeof(NINA.Equipment.Interfaces.Mediator.ICameraMediator).Assembly.GetName().Version?.ToString(),
+                camera = sessionCamera, cameraEnd = cameraAtEnd, sensorTemperature = temperature, controlsStart = sessionControls,
+                image = imageGeometry, settings = Settings, source = camera.Provenance,
                 format = options.Format, codec = options.Format == "avi" ? "FFV1" : "raw",
                 aviBayerRepresentation = options.Format == "avi" && imageGeometry != null ? "Raw scalar Bayer is stored as a gray plane; CFA layout is recorded in image.pixelFormat" : null,
-                options.Target, options.Filter, startedUtc = started, endedUtc = DateTimeOffset.UtcNow, statistics = Status,
-                timestampMeaning = "Host frame arrival/completion; monotonic elapsed time anchored to session UTC; not sensor exposure time; SER timestamp trailer is omitted",
+                options.Target, options.Filter, startedUtc = started, endedUtc = DateTimeOffset.UtcNow,
+                statistics = Status with { State = error != null ? "ERROR" : cameraAtEnd?.Connected == false ? "DISCONNECTED" : "READY" },
+                timestampMeaning, serTimestampsPresent, firstWrittenFrameUtc, lastWrittenFrameUtc,
+                recordedFrameSpanSeconds = recordedSpan, recordedAverageFps = recordedFps,
                 streamPrecisionReductionExplicitlyAllowed = Settings.AllowStreamDepthReduction
             };
             await using var file = new FileStream(sidecar + ".partial", FileMode.CreateNew, FileAccess.Write, FileShare.None);
@@ -374,6 +407,38 @@ public sealed class CaptureEngine : IAsyncDisposable {
             await file.FlushAsync().ConfigureAwait(false);
             file.Close();
             File.Move(sidecar + ".partial", sidecar, false);
+            static string Display(object? value) => value switch {
+                null => "Unavailable", IFormattable number => number.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+                _ => value.ToString() ?? "Unavailable"
+            };
+            var lines = new[] {
+                "PINS LuckyCapture " + pluginVersion + " capture information", "", "File=" + Path.GetFileName(outputPath),
+                "Camera=" + sessionCamera?.Name, "Camera ID=" + sessionCamera?.DeviceId,
+                "Driver version=" + Display(sessionCamera?.DriverVersion), "Backend=" + sessionCamera?.Backend, "Target=" + options.Target, "Filter=" + options.Filter,
+                "Capture start (UTC)=" + started?.ToString("O"), "Capture end (UTC)=" + DateTimeOffset.UtcNow.ToString("O"),
+                "First recorded frame (UTC)=" + firstWrittenFrameUtc?.ToString("O"),
+                "Last recorded frame (UTC)=" + lastWrittenFrameUtc?.ToString("O"),
+                "Recorded frames=" + written, "Recorded average FPS=" + Display(recordedFps),
+                "Recorded frame span (s)=" + Display(recordedSpan), "Exposure (s)=" + Display(Settings.ExposureSeconds),
+                "Gain=" + Display(Settings.Gain ?? sessionControls?.FirstOrDefault(c => c.Id == "gain")?.CurrentValue),
+                "Offset=" + Display(Settings.Offset ?? sessionControls?.FirstOrDefault(c => c.Id == "offset")?.CurrentValue),
+                "USB bandwidth=" + Display(sessionControls?.FirstOrDefault(c => c.Id == "usbLimit")?.CurrentValue),
+                "Binning=" + Settings.BinX + "x" + Settings.BinY, "Requested ROI=" + Display(Settings.Roi),
+                "Image layout=" + System.Text.Json.JsonSerializer.Serialize(imageGeometry, LuckyCaptureApi.Json),
+                "Acquisition path=" + camera.AcquisitionPath, "ROI mode=" + camera.RoiMode,
+                "Stop reason=" + stopReason, "AVI playback FPS=" + (options.Format == "avi" ? Display(options.PlaybackFps) : "Not applicable"),
+                "Lost recording frames=" + (acquired - written), "SER UTC timestamp trailer=" + serTimestampsPresent,
+                "Sensor temperature start (C)=" + Display(temperatureStart), "Sensor temperature end (C)=" + Display(temperatureEnd),
+                "Sensor temperature min (C)=" + Display(temperatureMinimum), "Sensor temperature max (C)=" + Display(temperatureMaximum),
+                "Sensor temperature mean (C)=" + Display(temperature.mean), "Temperature samples=" + temperatureSamples,
+                "Timestamp meaning=" + timestampMeaning
+            };
+            var logPath = Path.ChangeExtension(path, ".txt");
+            await using (var log = new FileStream(logPath + ".partial", FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
+                await log.WriteAsync(System.Text.Encoding.UTF8.GetBytes(string.Join(Environment.NewLine, lines) + Environment.NewLine)).ConfigureAwait(false);
+                await log.FlushAsync().ConfigureAwait(false);
+            }
+            File.Move(logPath + ".partial", logPath, false);
         } catch (Exception ex) { lock (sync) sidecarError = ex.Message; NINA.Core.Utility.Logger.Error(ex); }
     }
 
@@ -416,9 +481,22 @@ public sealed class CaptureEngine : IAsyncDisposable {
                     currentFps = (acquired - previous) / Math.Max(0.001, now - previousTime);
                     previous = acquired; previousTime = now;
                 }
+                try { SampleTemperature(camera.Metadata); } catch { /* Optional telemetry must not stop acquisition. */ }
                 PublishChange();
             }
         } catch (OperationCanceledException) { }
+    }
+
+    private void SampleTemperature(CameraMetadata? metadata, bool initial = false, bool final = false) {
+        var value = metadata?.Connected == true && metadata.Temperature is double t && double.IsFinite(t) ? (double?)t : null;
+        lock (sync) {
+            if (initial) temperatureStart = value;
+            if (final) temperatureEnd = value;
+            if (value is not double temperature) return;
+            temperatureMinimum = Math.Min(temperatureMinimum ?? temperature, temperature);
+            temperatureMaximum = Math.Max(temperatureMaximum ?? temperature, temperature);
+            temperatureTotal += temperature; temperatureSamples++;
+        }
     }
 
     private void PublishChange() {
