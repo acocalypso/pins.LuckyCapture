@@ -168,6 +168,8 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
         var info = RequireConnected();
         if (sequences.IsAdvancedSequenceRunning()) throw new LuckyCaptureException("CAMERA_BUSY", "An imaging sequence started; capture stopped");
         Validate(settings, info);
+        FrameMemory.EnsureFits((long)((settings.Roi?.Width ?? info.XSize) / settings.BinX) *
+            ((settings.Roi?.Height ?? info.YSize) / settings.BinY) * sizeof(ushort));
         CancellationToken disconnectToken;
         lock (lifecycleLock) disconnectToken = disconnected!.Token;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, disconnectToken);

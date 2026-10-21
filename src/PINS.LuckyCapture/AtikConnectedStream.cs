@@ -62,8 +62,9 @@ public sealed class AtikConnectedStream : IConnectedCameraStream {
         try {
             if (!started || pending == null) return;
             if (id != handle || data == IntPtr.Zero || width != (settings.Roi?.Width ?? camera.CameraXSize) / settings.BinX ||
-                height != (settings.Roi?.Height ?? camera.CameraYSize) / settings.BinY || (long)width * height * 2 > 32 * 1024 * 1024)
+                height != (settings.Roi?.Height ?? camera.CameraYSize) / settings.BinY)
                 throw new LuckyCaptureException("FRAME_LAYOUT_CHANGED", "Atik callback geometry or buffer is invalid");
+            FrameMemory.EnsureFits((long)width * height * 2);
             var words = new short[checked(width * height)]; Marshal.Copy(data, words, 0, words.Length);
             var pixels = new ushort[words.Length]; Buffer.BlockCopy(words, 0, pixels, 0, words.Length * 2);
             pending.TrySetResult(ConnectedCameraStreams.Frame(camera, settings, clock, ++sequence, width, height, 16, pixels));

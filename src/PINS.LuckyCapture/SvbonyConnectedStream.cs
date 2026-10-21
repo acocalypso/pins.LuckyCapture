@@ -89,7 +89,7 @@ public sealed class SvbonyConnectedStream : IConnectedCameraStream {
 
     public Task<AcquiredFrame> NextAsync(CancellationToken token) => Task.Run(() => {
         var count = checked(width * height);
-        if ((long)count * 2 > 32 * 1024 * 1024) throw new LuckyCaptureException("FRAME_TOO_LARGE", "Use a smaller ROI");
+        FrameMemory.EnsureFits((long)count * 2);
         var pixels = new ushort[count];
         var bytes = depth <= 8 ? new byte[count] : null;
         var timer = System.Diagnostics.Stopwatch.StartNew();

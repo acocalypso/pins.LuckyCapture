@@ -60,8 +60,7 @@ public sealed class FramePacket : IDisposable {
             }
         }
         var byteCount = frame.Pixels.LongLength * (frame.BitDepth > 8 ? 2 : 1);
-        if (byteCount > 32 * 1024 * 1024)
-            throw new LuckyCaptureException("FRAME_TOO_LARGE", "Use ROI: normalized frames are limited to 32 MiB");
+        FrameMemory.EnsureFits(frame.Pixels.LongLength * sizeof(ushort));
         var length = (int)byteCount;
         var packet = new FramePacket(frame, format, new BufferOwner(length));
         try {
@@ -84,8 +83,9 @@ public sealed class FramePacket : IDisposable {
         var expected = (long)width * height * channels * (bitDepth > 8 ? 2 : 1);
         if (width <= 0 || height <= 0 || bitDepth is < 8 or > 16 ||
             pixelFormat is not ("Mono" or "RGB" or "BGR" or "RGGB" or "GRBG" or "GBRG" or "BGGR") ||
-            expected != pixels.Length || expected > 32 * 1024 * 1024)
+            expected != pixels.Length)
             throw new LuckyCaptureException("UNSUPPORTED_PIXEL_FORMAT", "Invalid raw frame layout");
+        FrameMemory.EnsureFits((long)width * height * channels * sizeof(ushort));
         var metadata = new AcquiredFrame(1, DateTimeOffset.UtcNow, width, height, bitDepth,
             channels == 1 && pixelFormat != "Mono", pixelFormat, 0, 0, 1, 1, null, []);
         var frame = new FramePacket(metadata, pixelFormat, new BufferOwner((int)expected));

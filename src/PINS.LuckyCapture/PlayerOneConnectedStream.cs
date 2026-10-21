@@ -39,7 +39,7 @@ public sealed class PlayerOneConnectedStream : IConnectedCameraStream {
         return Task.CompletedTask;
     }
     public Task<AcquiredFrame> NextAsync(CancellationToken token) => Task.Run(() => {
-        if ((long)width * height * 2 > 32 * 1024 * 1024) throw new LuckyCaptureException("FRAME_TOO_LARGE", "Use a smaller ROI");
+        FrameMemory.EnsureFits((long)width * height * 2);
         var pixels = new ushort[checked(width * height)];
         var timer = System.Diagnostics.Stopwatch.StartNew();
         while (true) {

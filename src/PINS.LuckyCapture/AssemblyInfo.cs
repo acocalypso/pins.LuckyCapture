@@ -2,9 +2,9 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 
 [assembly: Guid("2ccac7ce-8162-4d94-b84b-7b2a645bf42d")]
-[assembly: AssemblyVersion("0.2.3.0")]
-[assembly: AssemblyFileVersion("0.2.3.0")]
-[assembly: AssemblyInformationalVersion("0.2.3")]
+[assembly: AssemblyVersion("0.2.4.0")]
+[assembly: AssemblyFileVersion("0.2.4.0")]
+[assembly: AssemblyInformationalVersion("0.2.4")]
 [assembly: AssemblyTitle("PINS LuckyCapture")]
 [assembly: AssemblyProduct("PINS LuckyCapture")]
 [assembly: AssemblyCompany("PINS contributors")]

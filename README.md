@@ -65,7 +65,15 @@ the first frame, acquisition retries once using full-frame capture and software
 crop. Unknown drivers and cameras without hardware ROI use software crop directly.
 `status.roiMode` reports `hardware`, `hardware_crop`, `software`, or `full_frame`.
 Software cropping reduces output size, but does not improve camera transfer FPS.
-Native stream source buffers remain limited to 32 MiB; a scaled JPEG preview
+Native and INDI source buffers, normalized frames and software crops share a
+host-memory guard: at most 128 MiB per 16-bit working frame, reduced to one
+sixteenth of the .NET-reported available memory on smaller hosts. This is a
+memory safeguard, not a 4096-pixel sensor/ROI limit. The recording queue remains
+bounded to its existing 32 MiB target (at least one frame for larger sensors).
+The API reports `maxFrameBytes` and `roiFallbackFrameLimitBytes` in capabilities.
+For example, a 6224x4168 raw frame needs about 49.5 MiB and fits on hosts with
+sufficient memory. Bayer ROI coordinates and dimensions still require even
+alignment; valid ROI bounds come from the connected sensor. A scaled JPEG preview
 cannot supply exact sensor ROI coordinates (use ordinary exposures instead).
 ROI fallback never creates a second camera connection or modifies PINS core.
 `acquisitionMode: "exposures"` forces ordinary capture. Unverified streams require

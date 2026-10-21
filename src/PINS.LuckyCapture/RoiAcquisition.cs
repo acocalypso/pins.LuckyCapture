@@ -69,8 +69,7 @@ public sealed class RoiAcquisition {
         var width = roi.Width / requested.BinX;
         var height = roi.Height / requested.BinY;
         var length = (long)width * height * channels;
-        if (width <= 0 || height <= 0 || length * sizeof(ushort) > 32 * 1024 * 1024)
-            throw new LuckyCaptureException("FRAME_TOO_LARGE", "Cropped frames are limited to 32 MiB");
+        FrameMemory.EnsureFits(length * sizeof(ushort));
         var pixels = new ushort[(int)length];
         for (var row = 0; row < height; row++)
             Array.Copy(frame.Pixels, ((y + row) * frame.Width + x) * channels, pixels, row * width * channels, width * channels);

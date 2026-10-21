@@ -26,11 +26,12 @@ public sealed class ToupTekConnectedStream : IConnectedCameraStream {
         width = (value.Roi?.Width ?? camera.CameraXSize) / value.BinX;
         height = (value.Roi?.Height ?? camera.CameraYSize) / value.BinY;
         if ((width | height) % 2 != 0) throw new LuckyCaptureException("INVALID_ROI", "ToupTek raw geometry requires even dimensions");
+        FrameMemory.EnsureFits((long)width * height * sizeof(ushort));
         started = true; camera.StartLiveView(new CaptureSequence { ExposureTime = value.ExposureSeconds });
         clock = new(); return Task.CompletedTask;
     }
     public async Task<AcquiredFrame> NextAsync(CancellationToken token) {
-        if ((long)width * height * 2 > 32 * 1024 * 1024) throw new LuckyCaptureException("FRAME_TOO_LARGE", "Use a smaller ROI");
+        FrameMemory.EnsureFits((long)width * height * 2);
         var pixels = new ushort[checked(width * height)];
         var timer = System.Diagnostics.Stopwatch.StartNew();
         while (true) {
