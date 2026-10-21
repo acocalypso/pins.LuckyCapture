@@ -4,6 +4,26 @@ using NUnit.Framework;
 namespace PINS.LuckyCapture.Tests;
 
 public class CapturePipelineTests {
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task CameraConnectedAfterDisconnectedSourceSelectionBecomesReady(bool notify) {
+        var camera = new FakeCamera();
+        camera.Disconnect();
+        await using var engine = new CaptureEngine(camera, Path.GetTempPath());
+        engine.ResetSource(new());
+        Assert.That(engine.Status.State, Is.EqualTo("DISCONNECTED"));
+        camera.Connect(notify);
+        Assert.That(engine.Status.State, Is.EqualTo("READY"));
+        await engine.StartPreviewAsync();
+        await Wait(() => engine.Preview != null);
+        Assert.That(engine.Status.State, Is.EqualTo("PREVIEWING"));
+        await engine.StopAsync();
+        camera.Disconnect();
+        Assert.That(engine.Status.State, Is.EqualTo("DISCONNECTED"));
+        camera.Connect(notify);
+        Assert.That(engine.Status.State, Is.EqualTo("READY"));
+    }
+
     private static AcquiredFrame Frame(ushort[] pixels, int width, int height, int bits = 16,
         string? bayer = null, short offsetX = 0) => new(1, DateTimeOffset.UtcNow, width, height,
         bits, bayer != null, bayer, offsetX, 0, 1, 1, null, pixels);
@@ -275,6 +295,7 @@ public class CapturePipelineTests {
         }
         public Task EndAsync() { EndCalls++; return Task.CompletedTask; }
         public void Disconnect() { connected = false; ConnectionChanged?.Invoke(false); }
+        public void Connect(bool notify) { connected = true; if (notify) ConnectionChanged?.Invoke(true); }
     }
 
     private sealed class FakeWriter(FakeCamera camera, int delay = 0) : IFrameWriter {

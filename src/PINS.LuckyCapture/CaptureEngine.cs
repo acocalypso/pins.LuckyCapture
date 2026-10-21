@@ -107,7 +107,10 @@ public sealed class CaptureEngine : IAsyncDisposable {
                 var seconds = elapsed.Elapsed.TotalSeconds;
                 var storedFrames = activeWriter?.FramesWritten ?? written;
                 var storedBytes = activeWriter?.BytesWritten ?? bytes;
-                var actualState = !IsActive && state == CaptureState.READY && !camera.Metadata.Connected ? CaptureState.DISCONNECTED : state;
+                // Idle connection state follows current equipment, including a camera
+                // connected after source selection. Preserve active and error states.
+                var actualState = !IsActive && state is CaptureState.READY or CaptureState.DISCONNECTED
+                    ? camera.Metadata.Connected ? CaptureState.READY : CaptureState.DISCONNECTED : state;
                 return new(actualState.ToString(), started, seconds, acquired, accepted, storedFrames, dropped,
                     previewSkipped, acquired / Math.Max(0.001, acquisitionSeconds > 0 ? acquisitionSeconds : seconds),
                     currentFps, storedFrames / Math.Max(0.001, seconds), storedBytes, storedBytes / Math.Max(0.001, seconds),

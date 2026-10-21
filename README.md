@@ -76,6 +76,8 @@ sufficient memory. Bayer ROI coordinates and dimensions still require even
 alignment; valid ROI bounds come from the connected sensor. A scaled JPEG preview
 cannot supply exact sensor ROI coordinates (use ordinary exposures instead).
 ROI fallback never creates a second camera connection or modifies PINS core.
+Idle connection status follows the current PINS equipment connection, including
+a camera connected after selecting the real source; no plugin restart is needed.
 `acquisitionMode: "exposures"` forces ordinary capture. Unverified streams require
 `allowExperimentalStreaming: true`; QHY additionally requires
 `allowDriverReconnect: true`. INDI depth reduction is rejected unless explicitly
