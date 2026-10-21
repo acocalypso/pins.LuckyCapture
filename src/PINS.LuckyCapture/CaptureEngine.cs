@@ -33,8 +33,9 @@ public sealed class CaptureEngine : IAsyncDisposable {
     private readonly Func<string, FramePacket, RecordingOptions, IFrameWriter>? writerFactory;
     private readonly Func<string, long> freeSpace;
     private readonly string outputDirectory;
+    private readonly Func<string?>? defaultOutputDirectory;
     private string sessionOutputDirectory;
-    public string DefaultOutputDirectory => outputDirectory;
+    public string DefaultOutputDirectory => OutputPaths.ResolveRoot(outputDirectory, defaultOutputDirectory?.Invoke());
     private CancellationTokenSource? cancellation;
     private CancellationTokenSource? durationCancellation;
     private CancellationTokenRegistration durationRegistration;
@@ -82,9 +83,10 @@ public sealed class CaptureEngine : IAsyncDisposable {
 
     public CaptureEngine(ILuckyCaptureCamera camera, string outputDirectory,
         Func<string, FramePacket, RecordingOptions, IFrameWriter>? writerFactory = null,
-        Func<string, long>? freeSpace = null) {
+        Func<string, long>? freeSpace = null, Func<string?>? defaultOutputDirectory = null) {
         this.camera = camera;
         this.outputDirectory = Path.GetFullPath(outputDirectory);
+        this.defaultOutputDirectory = defaultOutputDirectory;
         sessionOutputDirectory = this.outputDirectory;
         this.writerFactory = writerFactory;
         this.freeSpace = freeSpace ?? AvailableDiskBytes;
@@ -130,7 +132,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
 
     public async Task<string> SaveSnapshotAsync(RecordingOptions options, CancellationToken token) {
         var image = Preview ?? throw new LuckyCaptureException("PREVIEW_UNAVAILABLE", "Acquire a preview before saving a snapshot");
-        var directory = OutputPaths.ResolveRoot(outputDirectory, options.OutputDirectory);
+        var directory = OutputPaths.ResolveRoot(DefaultOutputDirectory, options.OutputDirectory);
         Directory.CreateDirectory(directory);
         if (freeSpace(directory) < image.LongLength + 32 * 1024 * 1024)
             throw new LuckyCaptureException("DISK_SPACE_LOW", "Insufficient disk space for a snapshot");
@@ -185,7 +187,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
             }
             PublishChange();
             if (options != null) {
-                sessionOutputDirectory = OutputPaths.ResolveRoot(outputDirectory, options.OutputDirectory);
+                sessionOutputDirectory = OutputPaths.ResolveRoot(DefaultOutputDirectory, options.OutputDirectory);
                 Directory.CreateDirectory(sessionOutputDirectory);
                 diskBytes = freeSpace(sessionOutputDirectory);
                 if (diskBytes < options.MinimumFreeBytes) throw new LuckyCaptureException("DISK_SPACE_LOW", "Insufficient free disk space");

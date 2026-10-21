@@ -148,8 +148,11 @@ connected driver's capability checks. Preview rotation changes only the display;
 ROI selection is mapped back to sensor coordinates and recorded pixels stay raw.
 
 Recording > File settings > Save folder accepts an absolute directory on the PINS
-host (including a mounted SSD). Blank uses the existing default, shown in the UI;
-`PINS_LUCKYCAPTURE_DIRECTORY` still overrides that default at startup. The service
+host (including a mounted SSD). Blank uses the active PINS profile's imaging
+folder, shown in the UI, for both recordings and PNG snapshots. Changes to the
+profile or its imaging folder apply to the next capture without restarting.
+`PINS_LUCKYCAPTURE_DIRECTORY`, when configured, overrides that profile default;
+the legacy NINA/LuckyCapture folder is used only if no imaging folder is set. The service
 user needs write permission. Subfolders remain relative to the selected root and
 disk-space checks use the selected filesystem. Saved PNGs use that root too.
 

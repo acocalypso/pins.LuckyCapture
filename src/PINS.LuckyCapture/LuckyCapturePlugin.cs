@@ -2,6 +2,7 @@ using System.ComponentModel.Composition;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Plugin;
 using NINA.Plugin.Interfaces;
+using NINA.Profile.Interfaces;
 using NINA.Sequencer.Interfaces.Mediator;
 
 namespace PINS.LuckyCapture;
@@ -14,7 +15,7 @@ public sealed class LuckyCapturePlugin : PluginBase {
     private readonly LuckyCaptureApi api;
 
     [ImportingConstructor]
-    public LuckyCapturePlugin(ICameraMediator camera, ISequenceMediator sequences, IMessageBroker broker, IFocuserMediator focuser) {
+    public LuckyCapturePlugin(ICameraMediator camera, ISequenceMediator sequences, IMessageBroker broker, IFocuserMediator focuser, IProfileService profiles) {
         Camera = new NinaStandardCameraAdapter(camera, sequences);
         var directory = Environment.GetEnvironmentVariable("PINS_LUCKYCAPTURE_DIRECTORY") ??
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NINA", "LuckyCapture");
@@ -24,7 +25,9 @@ public sealed class LuckyCapturePlugin : PluginBase {
         FocusWorkspace? workspace = null;
         var simulated = new SimulatedLuckyCaptureCamera(() => workspace!.Actuator, media);
         var sources = new CaptureSourceRouter(Camera, simulated);
-        Engine = new CaptureEngine(sources, directory, (path, frame, options) => RecordingWriters.Create(path, frame, options, sources.Metadata));
+        Engine = new CaptureEngine(sources, directory, (path, frame, options) => RecordingWriters.Create(path, frame, options, sources.Metadata),
+            defaultOutputDirectory: () => Environment.GetEnvironmentVariable("PINS_LUCKYCAPTURE_DIRECTORY") is { Length: > 0 } configured
+                ? configured : profiles.ActiveProfile.ImageFileSettings.FilePath);
         Focus = workspace = new(sources, media, physical, virtualMotor, sequences);
         Focus.Attach(Engine);
         api = new LuckyCaptureApi(sources, Engine, broker, Focus);

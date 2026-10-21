@@ -81,9 +81,15 @@ public class CameraIntegrationTests {
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<ICameraMediator>(container, mediator);
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<ISequenceMediator>(container, Mock.Of<ISequenceMediator>());
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<IFocuserMediator>(container, Mock.Of<IFocuserMediator>());
+        var profiles = new Mock<NINA.Profile.Interfaces.IProfileService> { DefaultValue = DefaultValue.Mock };
+        var imagingDirectory = Path.Combine(Path.GetTempPath(), "PINS-imaging");
+        profiles.Setup(p => p.ActiveProfile.ImageFileSettings.FilePath).Returns(imagingDirectory);
+        System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue(container, profiles.Object);
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<NINA.Plugin.Interfaces.IMessageBroker>(container, new NINA.Plugin.Messaging.MessageBroker());
         var manifest = container.GetExportedValue<NINA.Plugin.Interfaces.IPluginManifest>();
         Assert.That(manifest.Name, Is.EqualTo("PINS LuckyCapture"));
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PINS_LUCKYCAPTURE_DIRECTORY")))
+            Assert.That(((LuckyCapturePlugin)manifest).Engine.DefaultOutputDirectory, Is.EqualTo(imagingDirectory));
         await manifest.Initialize();
         await manifest.Teardown();
         handler.Verify(h => h.Connect(), Times.Never);

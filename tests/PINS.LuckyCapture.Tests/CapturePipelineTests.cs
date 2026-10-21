@@ -147,10 +147,12 @@ public class CapturePipelineTests {
         Assert.That(preview.Status.StopReason, Is.EqualTo("camera_disconnected"));
     }
 
-    [Test]
-    public async Task CustomSaveRootIsUsedForRecordingSnapshotAndDiskChecks() {
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task SaveRootFollowsProfileUnlessExplicitlyOverridden(bool custom) {
         var root = Path.Combine(Path.GetTempPath(), "LuckyCapture-custom-" + Guid.NewGuid());
         var selected = Path.Combine(root, "selected");
+        var profile = selected;
         var camera = new FakeCamera();
         var writer = new FakeWriter(camera);
         var probes = new List<string>();
@@ -158,16 +160,19 @@ public class CapturePipelineTests {
         try {
             await using var engine = new CaptureEngine(camera, Path.Combine(root, "default"),
                 (path, _, _) => { writerPath = path; return writer; },
-                path => { probes.Add(path); return long.MaxValue; });
-            await engine.StartRecordingAsync(new(FrameLimit: 1, OutputDirectory: selected));
+                path => { probes.Add(path); return long.MaxValue; }, () => profile);
+            Assert.That(engine.DefaultOutputDirectory, Is.EqualTo(selected));
+            await engine.StartRecordingAsync(new(FrameLimit: 1, OutputDirectory: custom ? selected : null));
             await Wait(() => !engine.IsActive);
             Assert.That(Path.GetDirectoryName(writerPath), Is.EqualTo(selected));
             Assert.That(probes, Is.All.EqualTo(selected));
             await engine.StartPreviewAsync();
             await Wait(() => engine.Preview != null);
             await engine.StopAsync();
-            var png = await engine.SaveSnapshotAsync(new(OutputDirectory: selected), default);
-            Assert.That(Path.GetDirectoryName(png), Is.EqualTo(selected));
+            profile = Path.Combine(root, "changed-profile");
+            Assert.That(engine.DefaultOutputDirectory, Is.EqualTo(profile));
+            var png = await engine.SaveSnapshotAsync(new(OutputDirectory: custom ? selected : ""), default);
+            Assert.That(Path.GetDirectoryName(png), Is.EqualTo(custom ? selected : profile));
             Assert.That(File.Exists(png), Is.True);
             Assert.That(Directory.Exists(Path.Combine(root, "default")), Is.False);
             Assert.Throws<LuckyCaptureException>(() => OutputPaths.ResolveRoot(root, "relative/folder"));
