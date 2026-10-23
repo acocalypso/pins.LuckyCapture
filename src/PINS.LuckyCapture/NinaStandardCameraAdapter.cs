@@ -156,8 +156,8 @@ public sealed class NinaStandardCameraAdapter : ICameraConsumer, ILuckyCaptureCa
                 "ToupTek family" or "QHY" or "Atik" or "INDI";
             return await roiAcquisition.AcquireAsync(settings, info.XSize, info.YSize, hardwareRoi,
                 AcquireFrameAsync, ResetSourceAsync, token,
-                backend is "SVBony" or "ZWO ASI" ? 8 : 1,
-                backend is "SVBony" or "ZWO ASI" or "ToupTek family" ? 2 : 1).ConfigureAwait(false);
+                backend is "SVBony" or "ZWO ASI" ? 8 : backend == "Player One" ? 4 : 1,
+                backend is "SVBony" or "ZWO ASI" or "Player One" or "ToupTek family" ? 2 : 1).ConfigureAwait(false);
         } finally {
             frameGate.Release();
         }

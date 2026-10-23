@@ -188,3 +188,10 @@ it does not invent missing historical timestamps. Disk checks reserve space for
 the trailer as well as its temporary spool. Existing files are not rewritten.
 
 See [SER timing and metadata notes](docs/ser-timing-and-metadata.md).
+
+## Experimental stream read fixes (0.2.6)
+
+Player One now waits for frame readiness before downloading, with bounded reads
+and correct hardware ROI alignment. ToupTek-family reads preserve native failure
+codes, verify stream mode and restore the original trigger state on stop or failed
+startup. See [stream read handling and hardware retest notes](docs/streaming-recovery-0.2.6.md).

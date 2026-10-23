@@ -35,17 +35,32 @@ public sealed class PlayerOneConnectedStream : IConnectedCameraStream {
         if (width != (value.Roi?.Width ?? camera.CameraXSize) / value.BinX || height != (value.Roi?.Height ?? camera.CameraYSize) / value.BinY ||
             geometry.Item1 * value.BinX != (value.Roi?.X ?? 0) || geometry.Item2 * value.BinY != (value.Roi?.Y ?? 0) || geometry.Item5 != value.BinX)
             throw new LuckyCaptureException("INVALID_ROI", "Player One changed requested ROI origin, dimensions or binning");
-        started = true; sdk.StartVideoCapture(value.ExposureSeconds, width, height); clock = new();
+        started = true;
+        sdk.StartVideoCapture(value.ExposureSeconds, width, height);
+        clock = new(); sequence = 0;
+        NINA.Core.Utility.Logger.Info($"LuckyCapture Player One camera {id}: {width}x{height}, {depth}-bit, exposure {value.ExposureSeconds}s");
         return Task.CompletedTask;
     }
-    public Task<AcquiredFrame> NextAsync(CancellationToken token) => Task.Run(() => {
+    public Task<AcquiredFrame> NextAsync(CancellationToken token) => Task.Run(async () => {
         FrameMemory.EnsureFits((long)width * height * 2);
         var pixels = new ushort[checked(width * height)];
         var timer = System.Diagnostics.Stopwatch.StartNew();
         while (true) {
             token.ThrowIfCancellationRequested();
             if (!camera.Connected) throw new LuckyCaptureException("CAMERA_NOT_CONNECTED", "Player One disconnected");
-            var result = native.POAGetImageData(id, pixels, pixels.Length * (depth > 8 ? 2 : 1), 100);
+            if (timer.Elapsed.TotalSeconds > settings.ExposureSeconds * 2 + 5)
+                throw new LuckyCaptureException("CAMERA_TIMEOUT", $"Player One camera {id} video frame timed out waiting for readiness ({width}x{height}, {depth}-bit)");
+            var result = native.POAImageReady(id, out var ready);
+            if (result != POAErrors.POA_OK)
+                throw new LuckyCaptureException("SDK_ERROR", $"Player One camera {id} readiness returned {result}");
+            if (ready != POABool.POA_TRUE) {
+                await Task.Delay(2, token).ConfigureAwait(false);
+                continue;
+            }
+            // The SDK documents readiness polling and exposure + 500 ms for retrieval.
+            // Bound native blocking so cancellation cannot wait for a long exposure again.
+            var readTimeout = (int)Math.Clamp(Math.Ceiling(settings.ExposureSeconds * 1000) + 500, 500, 1000);
+            result = native.POAGetImageData(id, pixels, pixels.Length * (depth > 8 ? 2 : 1), readTimeout);
             if (result == POAErrors.POA_OK) {
                 if (depth == 8) {
                     var bytes = MemoryMarshal.AsBytes(pixels.AsSpan()).Slice(0, pixels.Length).ToArray();
@@ -54,7 +69,8 @@ public sealed class PlayerOneConnectedStream : IConnectedCameraStream {
                 var frame = ConnectedCameraStreams.Frame(camera, settings, clock, ++sequence, width, height, depth, pixels);
                 return monoOutput ? frame with { IsBayered = false, BayerPattern = null } : frame;
             }
-            if (result != POAErrors.POA_ERROR_TIMEOUT) throw new LuckyCaptureException("SDK_ERROR", $"Player One returned {result}");
+            if (result != POAErrors.POA_ERROR_TIMEOUT) throw new LuckyCaptureException("SDK_ERROR", $"Player One camera {id} frame retrieval returned {result} after readiness ({width}x{height}, {depth}-bit)");
+            await Task.Delay(2, token).ConfigureAwait(false);
             if (timer.Elapsed.TotalSeconds > settings.ExposureSeconds * 2 + 5) throw new LuckyCaptureException("CAMERA_TIMEOUT", "Player One video frame timed out");
         }
     }, token);
