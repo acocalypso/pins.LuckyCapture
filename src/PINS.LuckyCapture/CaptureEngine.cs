@@ -17,7 +17,8 @@ public sealed record CaptureStatus(string State, DateTimeOffset? StartedTime, do
     string? OutputPath, long? FreeDiskBytes, long? TargetFrames, double? TargetDurationSeconds,
     double? FrameProgress, double? TimeProgress, string? StopReason, string? LastError,
     string? PreviewError, long PreviewSequence, long Revision, string? SidecarError = null, long StreamTapDroppedFrames = 0,
-    string AcquisitionPath = "repeated_exposures", string RoiMode = "full_frame");
+    string AcquisitionPath = "repeated_exposures", string RoiMode = "full_frame",
+    string? OutputDirectory = null, string? RequestedOutputDirectory = null, string? OutputDirectoryFallback = null);
 
 public interface IFrameWriter : IAsyncDisposable {
     long FramesWritten { get; }
@@ -35,7 +36,15 @@ public sealed class CaptureEngine : IAsyncDisposable {
     private readonly string outputDirectory;
     private readonly Func<string?>? defaultOutputDirectory;
     private string sessionOutputDirectory;
-    public string DefaultOutputDirectory => OutputPaths.ResolveRoot(outputDirectory, defaultOutputDirectory?.Invoke());
+    // Profile image folder (or override), then N.I.N.A's own default, then the plugin folder.
+    private IEnumerable<string?> DefaultCandidates() {
+        yield return defaultOutputDirectory?.Invoke();
+        yield return OutputPaths.NinaDefaultDirectory;
+        yield return outputDirectory;
+    }
+    public string DefaultOutputDirectory => OutputPaths.FirstDefault(DefaultCandidates()) ?? outputDirectory;
+    public string FallbackOutputDirectory => OutputPaths.FirstDefault(DefaultCandidates().Skip(1)) ?? outputDirectory;
+    private OutputLocation? location;
     private CancellationTokenSource? cancellation;
     private CancellationTokenSource? durationCancellation;
     private CancellationTokenRegistration durationRegistration;
@@ -65,6 +74,8 @@ public sealed class CaptureEngine : IAsyncDisposable {
     private TaskCompletionSource change = NewChange();
     private bool disposed;
     public Action<FramePacket>? FrameTap { get; set; }
+    /// <summary>Overrides the memory-based recording queue size (frames); used by tests.</summary>
+    public int? RecordingQueueFrames { get; init; }
     public Action? ConfigurationGuard { get; set; }
     public Action? SessionEnded { get; set; }
     public Action? SessionStarted { get; set; }
@@ -118,7 +129,8 @@ public sealed class CaptureEngine : IAsyncDisposable {
                     diskBytes, recording?.FrameLimit, recording?.DurationSeconds,
                     recording?.FrameLimit is long f ? Math.Min(1, (double)storedFrames / f) : null,
                     recording?.DurationSeconds is double d ? Math.Min(1, seconds / d) : null,
-                    stopReason, error, previewError, previewSequence, revision, sidecarError, camera.StreamTapDroppedFrames, camera.AcquisitionPath, camera.RoiMode);
+                    stopReason, error, previewError, previewSequence, revision, sidecarError, camera.StreamTapDroppedFrames, camera.AcquisitionPath, camera.RoiMode,
+                    location?.Directory, location?.Requested, location?.FallbackReason);
             }
         }
     }
@@ -133,10 +145,13 @@ public sealed class CaptureEngine : IAsyncDisposable {
         PublishChange();
     }
 
-    public async Task<string> SaveSnapshotAsync(RecordingOptions options, CancellationToken token) {
+    public async Task<string> SaveSnapshotAsync(RecordingOptions options, CancellationToken token) =>
+        (await SaveSnapshotWithLocationAsync(options, token).ConfigureAwait(false)).Path;
+
+    public async Task<(string Path, OutputLocation Location)> SaveSnapshotWithLocationAsync(RecordingOptions options, CancellationToken token) {
         var image = Preview ?? throw new LuckyCaptureException("PREVIEW_UNAVAILABLE", "Acquire a preview before saving a snapshot");
-        var directory = OutputPaths.ResolveRoot(DefaultOutputDirectory, options.OutputDirectory);
-        Directory.CreateDirectory(directory);
+        var resolved = ResolveOutput(options.OutputDirectory);
+        var directory = resolved.Directory;
         if (freeSpace(directory) < image.LongLength + 32 * 1024 * 1024)
             throw new LuckyCaptureException("DISK_SPACE_LOW", "Insufficient disk space for a snapshot");
         var path = OutputPaths.CreatePartialPath(directory, options with { Format = "png" }, camera.Metadata);
@@ -146,7 +161,15 @@ public sealed class CaptureEngine : IAsyncDisposable {
         }
         var final = path[..^8];
         File.Move(path, final, false);
-        return final;
+        return (final, resolved);
+    }
+
+    private OutputLocation ResolveOutput(string? selected) {
+        var resolved = OutputPaths.Resolve(selected, DefaultCandidates());
+        if (resolved.FallbackReason != null)
+            NINA.Core.Utility.Logger.Warning($"LuckyCapture folder {resolved.Requested} is unavailable ({resolved.FallbackReason}); saving to {resolved.Directory}");
+        lock (sync) location = resolved;
+        return resolved;
     }
 
     public async Task StartPreviewAsync(int previewFps = 8, CancellationToken token = default) =>
@@ -190,8 +213,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
             }
             PublishChange();
             if (options != null) {
-                sessionOutputDirectory = OutputPaths.ResolveRoot(DefaultOutputDirectory, options.OutputDirectory);
-                Directory.CreateDirectory(sessionOutputDirectory);
+                sessionOutputDirectory = ResolveOutput(options.OutputDirectory).Directory;
                 diskBytes = freeSpace(sessionOutputDirectory);
                 if (diskBytes < options.MinimumFreeBytes) throw new LuckyCaptureException("DISK_SPACE_LOW", "Insufficient free disk space");
                 if (options.FrameLimit is long frames && options.Format == "ser") {
@@ -215,10 +237,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
                 durationRegistration = durationCancellation.Token.Register(() => SetStopReason("duration_limit"));
                 durationCancellation.CancelAfter(TimeSpan.FromSeconds(duration));
             }
-            var metadata = camera.Metadata;
-            var estimatedBytes = Math.Max(1L, (long)(Settings.Roi?.Width ?? metadata.Width ?? 1) *
-                (Settings.Roi?.Height ?? metadata.Height ?? 1) * 2);
-            var capacity = (int)Math.Clamp(32 * 1024 * 1024 / estimatedBytes, 1, 8);
+            var capacity = RecordingQueueFrames ?? RecordingQueueCapacity(camera.Metadata, Settings);
             recordingQueue = Channel.CreateBounded<FramePacket>(new BoundedChannelOptions(capacity) {
                 FullMode = BoundedChannelFullMode.Wait, SingleWriter = true, SingleReader = true
             });
@@ -302,7 +321,7 @@ public sealed class CaptureEngine : IAsyncDisposable {
             PublishChange();
             queue.Writer.TryComplete(); samples.Writer.TryComplete();
             try { await writerTask.ConfigureAwait(false); }
-            catch (Exception ex) { lock (sync) { error = ex.Message; stopReason = "writer_error"; } }
+            catch (Exception ex) { lock (sync) { error = DescribeWriterFailure(ex); stopReason = "writer_error"; } }
             await sampleTask.ConfigureAwait(false);
             try { cameraAtEnd = camera.Metadata; } catch { cameraAtEnd = null; }
             SampleTemperature(cameraAtEnd, final: true);
@@ -454,6 +473,9 @@ public sealed class CaptureEngine : IAsyncDisposable {
                     var sample = HistogramSampler.Compute(frame);
                     var image = PngPreviewEncoder.Encode(frame, sample);
                     lock (sync) { histogram = sample; preview = image; previewSequence = frame.Sequence; }
+                    // Clients fetch the preview when they see a new sequence; without this they
+                    // only learn of it from the once-per-second status tick.
+                    PublishChange();
                 } catch (Exception ex) { lock (sync) previewError = ex.Message; }
             }
         }
@@ -515,6 +537,28 @@ public sealed class CaptureEngine : IAsyncDisposable {
         lock (sync) wait = revision != previousRevision ? Task.CompletedTask : change.Task;
         await wait.WaitAsync(token).ConfigureAwait(false);
         return Status;
+    }
+
+    /// <summary>
+    /// Frames buffered between camera and disk. Sized by memory rather than frame count so that
+    /// small planetary ROIs at high rates survive slow media (USB sticks, fsync stalls) for seconds.
+    /// </summary>
+    public static int RecordingQueueCapacity(CameraMetadata metadata, CaptureSettings settings, long? availableMemory = null) {
+        var width = (long)(settings.Roi?.Width ?? metadata.Width ?? 1) / Math.Max((short)1, settings.BinX);
+        var height = (long)(settings.Roi?.Height ?? metadata.Height ?? 1) / Math.Max((short)1, settings.BinY);
+        var depth = settings.BitDepth ?? metadata.BitDepth ?? 16;
+        var frameBytes = Math.Max(1L, width * height * (depth > 8 ? 2 : 1));
+        // Pooled buffers round up to a power of two.
+        var pooledBytes = (long)System.Numerics.BitOperations.RoundUpToPowerOf2((ulong)frameBytes);
+        var memory = availableMemory ?? GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        var budget = Math.Clamp(memory > 0 ? memory / 16 : 0, 32L * 1024 * 1024, 256L * 1024 * 1024);
+        return (int)Math.Clamp(budget / pooledBytes, 2, 4096);
+    }
+
+    private string DescribeWriterFailure(Exception ex) {
+        if (ex is IOException or UnauthorizedAccessException && !Directory.Exists(sessionOutputDirectory))
+            return $"The recording folder {sessionOutputDirectory} is no longer available. Was the drive removed? Frames already written may be incomplete.";
+        return ex.Message;
     }
 
     public static long AvailableDiskBytes(string directory) {

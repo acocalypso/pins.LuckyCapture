@@ -82,7 +82,7 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
             return new { settings = engine.Settings, controls = camera.Controls };
         }
         switch (operation) {
-            case "health": return new { plugin = "PINS LuckyCapture", version = "0.2.6", available = true };
+            case "health": return new { plugin = "PINS LuckyCapture", version = "0.2.7", available = true };
             case "camera": return camera.Metadata;
             case "controls": return camera.Controls;
             case "capabilities": return new {
@@ -97,7 +97,8 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
                 rawDepthOptions = camera.StreamDepthOptions, bitDepthSelection = camera.StreamDepthOptions.Length > 1, ser = true, avi = RecordingWriters.AviAvailable, preview = true, histogram = true,
                 acquisition = camera.Metadata.StreamingSupported ? camera.StreamCapability.Mode : "repeated_exposures", stream = camera.StreamCapability,
                 sdkDropCountAvailable = camera.StreamCapability.Backend == "ZWO ASI", gamma = false, highSpeed = false, frameRateControl = false,
-                defaultOutputDirectory = engine.DefaultOutputDirectory, customOutputDirectory = true,
+                defaultOutputDirectory = engine.DefaultOutputDirectory, fallbackOutputDirectory = engine.FallbackOutputDirectory,
+                customOutputDirectory = true, outputDirectoryFallback = true,
                 snapshot = true, snapshotRepresentation = "display_png"
             };
             case "status":
@@ -132,8 +133,10 @@ public sealed class LuckyCaptureApi : ISubscriber, IDisposable {
             case "roi/reset": engine.Configure(engine.Settings with { Roi = null }); return engine.Settings;
             case "snapshot": {
                 var options = JsonSerializer.Deserialize<RecordingOptions>(payload, Json) ?? new();
-                var path = await engine.SaveSnapshotAsync(options, token).ConfigureAwait(false);
-                return new { outputPath = path, representation = "display_png", nativeRecording = false };
+                var (path, location) = await engine.SaveSnapshotWithLocationAsync(options, token).ConfigureAwait(false);
+                return new { outputPath = path, representation = "display_png", nativeRecording = false,
+                    outputDirectory = location.Directory, requestedOutputDirectory = location.Requested,
+                    outputDirectoryFallback = location.FallbackReason };
             }
             case "events/wait": {
                 var previous = JsonSerializer.Deserialize<RevisionRequest>(payload, Json) ?? new();

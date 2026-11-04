@@ -15,7 +15,10 @@ public static class PngPreviewEncoder {
         var row = ArrayPool<byte>.Shared.Rent(1 + width * channels);
         var low = stretch ? histogram.Min : 0;
         var high = stretch && histogram.Max > low ? histogram.Max : (1 << frame.BitDepth) - 1;
-        byte Display(double value) => (byte)Math.Clamp((int)((value - low) * 255 / Math.Max(1, high - low)), 0, 255);
+        var range = Math.Max(1, high - low);
+        byte Display(double value) => (byte)Math.Clamp((int)((value - low) * 255 / range), 0, 255);
+        var wide = frame.BitDepth > 8;
+        var data = frame.Data.Span;
         using var compressed = new MemoryStream();
         try {
             using (var zlib = new ZLibStream(compressed, CompressionLevel.Fastest, true)) {
@@ -26,23 +29,23 @@ public static class PngPreviewEncoder {
                         var sx = Math.Min(frame.Width - 1, x * frame.Width / width);
                         if (frame.Channels == 3) {
                             var index = (sy * frame.Width + sx) * 3;
-                            row[1 + x * 3] = Display(frame.Pixel(index + (frame.PixelFormat == "BGR" ? 2 : 0)));
-                            row[2 + x * 3] = Display(frame.Pixel(index + 1));
-                            row[3 + x * 3] = Display(frame.Pixel(index + (frame.PixelFormat == "BGR" ? 0 : 2)));
+                            row[1 + x * 3] = Display(FramePacket.Sample(data, index + (frame.PixelFormat == "BGR" ? 2 : 0), wide));
+                            row[2 + x * 3] = Display(FramePacket.Sample(data, index + 1, wide));
+                            row[3 + x * 3] = Display(FramePacket.Sample(data, index + (frame.PixelFormat == "BGR" ? 0 : 2), wide));
                             continue;
                         }
-                        if (!color) { row[1 + x] = Display(frame.Pixel(sy * frame.Width + sx)); continue; }
+                        if (!color) { row[1 + x] = Display(FramePacket.Sample(data, sy * frame.Width + sx, wide)); continue; }
                         double red = 0, green = 0, blue = 0; int nr = 0, ng = 0, nb = 0;
                         for (var dy = Math.Max(0, sy - 1); dy <= Math.Min(frame.Height - 1, sy + 1); dy++)
                         for (var dx = Math.Max(0, sx - 1); dx <= Math.Min(frame.Width - 1, sx + 1); dx++) {
-                            var value = frame.Pixel(dy * frame.Width + dx);
+                            var value = FramePacket.Sample(data, dy * frame.Width + dx, wide);
                             switch (frame.PixelFormat[(dy & 1) * 2 + (dx & 1)]) {
                                 case 'R': red += value; nr++; break;
                                 case 'G': green += value; ng++; break;
                                 case 'B': blue += value; nb++; break;
                             }
                         }
-                        var fallback = frame.Pixel(sy * frame.Width + sx);
+                        var fallback = FramePacket.Sample(data, sy * frame.Width + sx, wide);
                         row[1 + x * 3] = Display(nr > 0 ? red / nr : fallback);
                         row[2 + x * 3] = Display(ng > 0 ? green / ng : fallback);
                         row[3 + x * 3] = Display(nb > 0 ? blue / nb : fallback);

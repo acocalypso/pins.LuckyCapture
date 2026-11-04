@@ -13,6 +13,8 @@ public interface ILuckyCaptureCamera {
     IReadOnlyList<ControlDescriptor> Controls { get; }
     void ValidateSettings(CaptureSettings settings);
     Task BeginAsync(CancellationToken token);
+    /// <remarks>Streams may reuse the returned pixel array on the next call: pack or copy the
+    /// frame (for example with <see cref="FramePacket.Normalize"/>) before acquiring again.</remarks>
     Task<AcquiredFrame> AcquireAsync(CaptureSettings settings, CancellationToken token);
     Task EndAsync();
 }

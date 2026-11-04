@@ -81,7 +81,7 @@ public class CapturePipelineTests {
     public async Task SlowWriterAppliesBoundedBackpressureAndWritesEveryAcceptedFrame() {
         var camera = new FakeCamera();
         var writer = new FakeWriter(camera, 8);
-        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => writer, _ => long.MaxValue);
+        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => writer, _ => long.MaxValue) { RecordingQueueFrames = 8 };
         await engine.StartRecordingAsync(new(FrameLimit: 40));
         await Wait(() => engine.Status.StopReason == "frame_limit" && !engine.IsActive);
         Assert.Multiple(() => {
@@ -119,7 +119,7 @@ public class CapturePipelineTests {
     public async Task NativeVideoOverflowIsCountedAndAcceptedFramesDrain() {
         var camera = new FakeCamera { NativeVideo = true };
         var writer = new FakeWriter(camera, 20);
-        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => writer, _ => long.MaxValue);
+        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => writer, _ => long.MaxValue) { RecordingQueueFrames = 4 };
         await engine.StartRecordingAsync(new(FrameLimit: 30));
         await Wait(() => !engine.IsActive);
         Assert.Multiple(() => {
@@ -240,7 +240,7 @@ public class CapturePipelineTests {
         } finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
     }
 
-    private static async Task Wait(Func<bool> done) {
+    internal static async Task Wait(Func<bool> done) {
         var timer = Stopwatch.StartNew();
         while (!done()) {
             if (timer.Elapsed > TimeSpan.FromSeconds(5)) Assert.Fail("Capture did not finish within five seconds");
@@ -275,7 +275,7 @@ public class CapturePipelineTests {
         Assert.That(process.ExitCode, Is.Zero, await errors);
     }
 
-    private sealed class FakeCamera : ILuckyCaptureCamera {
+    internal sealed class FakeCamera : ILuckyCaptureCamera {
         public event Action<bool>? ConnectionChanged;
         private bool connected = true;
         public int Calls, BeginCalls, EndCalls;
@@ -298,7 +298,7 @@ public class CapturePipelineTests {
         public void Connect(bool notify) { connected = true; if (notify) ConnectionChanged?.Invoke(true); }
     }
 
-    private sealed class FakeWriter(FakeCamera camera, int delay = 0) : IFrameWriter {
+    internal sealed class FakeWriter(FakeCamera camera, int delay = 0) : IFrameWriter {
         public long FramesWritten { get; private set; }
         public long BytesWritten { get; private set; }
         public int MaximumOutstandingFrames, FinishCalls;

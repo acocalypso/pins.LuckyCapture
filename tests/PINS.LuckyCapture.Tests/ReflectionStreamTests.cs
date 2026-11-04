@@ -30,7 +30,7 @@ public class ReflectionStreamTests {
     [Test]
     public async Task ReflectionReusesExistingSdkAndRestoresModeWithoutOpeningCamera() {
         var (camera, native) = Create();
-        native.Setup(n => n.SVBGetVideoDataMono16(7, It.IsAny<ushort[]>(), 32, 100))
+        native.Setup(n => n.SVBGetVideoDataMono16(7, It.IsAny<ushort[]>(), 32, It.IsAny<int>()))
             .Callback<int, ushort[], int, int>((_, pixels, _, _) => pixels[0] = 0xabcd).Returns(SVB_ERROR_CODE.SVB_SUCCESS);
         await using (var stream = new SvbonyConnectedStream(camera)) {
             await stream.StartAsync(new(), default);
@@ -55,7 +55,7 @@ public class ReflectionStreamTests {
         native.Verify(n => n.SVBSetCameraMode(7, SVB_CAMERA_MODE.SVB_MODE_TRIG_SOFT), Times.Once);
         native.Setup(n => n.SVBSetCameraMode(7, SVB_CAMERA_MODE.SVB_MODE_NORMAL)).Returns(SVB_ERROR_CODE.SVB_SUCCESS);
         using var cancel = new CancellationTokenSource();
-        native.Setup(n => n.SVBGetVideoDataMono16(7, It.IsAny<ushort[]>(), 32, 100))
+        native.Setup(n => n.SVBGetVideoDataMono16(7, It.IsAny<ushort[]>(), 32, It.IsAny<int>()))
             .Callback(() => cancel.Cancel()).Returns(SVB_ERROR_CODE.SVB_ERROR_TIMEOUT);
         await using (var stream = new SvbonyConnectedStream(camera)) {
             await stream.StartAsync(new(), default);
@@ -72,7 +72,7 @@ public class ReflectionStreamTests {
     [Test]
     public async Task ExplicitSvbonyEightBitCaptureRestoresSixteenBitFormat() {
         var (camera, native) = Create();
-        native.Setup(n => n.SVBGetVideoDataMono8(7, It.IsAny<byte[]>(), 16, 100))
+        native.Setup(n => n.SVBGetVideoDataMono8(7, It.IsAny<byte[]>(), 16, It.IsAny<int>()))
             .Callback<int, byte[], int, int>((_, pixels, _, _) => pixels[0] = 237).Returns(SVB_ERROR_CODE.SVB_SUCCESS);
         await using (var stream = new SvbonyConnectedStream(camera)) {
             await stream.StartAsync(new(BitDepth: 8), default);
@@ -95,12 +95,54 @@ public class ReflectionStreamTests {
     [Test]
     public async Task LuminanceOutputIsNotMislabeledAsBayer() {
         var (camera, native) = Create(SVB_IMG_TYPE.SVB_IMG_RAW16, SVB_IMG_TYPE.SVB_IMG_Y8, SensorType.GRBG);
-        native.Setup(n => n.SVBGetVideoDataMono8(7, It.IsAny<byte[]>(), 16, 100)).Returns(SVB_ERROR_CODE.SVB_SUCCESS);
+        native.Setup(n => n.SVBGetVideoDataMono8(7, It.IsAny<byte[]>(), 16, It.IsAny<int>())).Returns(SVB_ERROR_CODE.SVB_SUCCESS);
         await using var stream = new SvbonyConnectedStream(camera);
         await stream.StartAsync(new(BitDepth: 8), default);
         var frame = await stream.NextAsync(default);
         Assert.That(frame.IsBayered, Is.False);
         Assert.That(frame.BayerPattern, Is.Null);
+    }
+
+    [TestCase(0.001, 502)]
+    [TestCase(0.0, 500)]
+    [TestCase(2.0, 4500)]
+    public void SdkWaitCoversAWholeFrameLikePins(double exposure, int expected) =>
+        Assert.That(SvbonyConnectedStream.SdkWaitMilliseconds(exposure), Is.EqualTo(expected));
+
+    [Test]
+    public async Task StalledFirstFrameRecoversByRestartingVideoCapture() {
+        var (camera, native) = Create();
+        var restarted = false;
+        native.Setup(n => n.SVBStartVideoCapture(7)).Returns(SVB_ERROR_CODE.SVB_SUCCESS);
+        native.Setup(n => n.SVBGetVideoDataMono16(7, It.IsAny<ushort[]>(), 32, It.IsAny<int>()))
+            .Returns(() => restarted ? SVB_ERROR_CODE.SVB_SUCCESS : SVB_ERROR_CODE.SVB_ERROR_TIMEOUT);
+        await using var stream = new SvbonyConnectedStream(camera);
+        await stream.StartAsync(new(ExposureSeconds: 0.001), default);
+        native.Setup(n => n.SVBStartVideoCapture(7)).Callback(() => restarted = true).Returns(SVB_ERROR_CODE.SVB_SUCCESS);
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        var frame = await stream.NextAsync(default);
+        Assert.Multiple(() => {
+            Assert.That(frame.Sequence, Is.EqualTo(1));
+            Assert.That(stream.StartupRestarts, Is.EqualTo(1));
+            Assert.That(timer.Elapsed.TotalSeconds, Is.LessThan(4.5), "Recovery must be faster than the 5 s timeout");
+        });
+    }
+
+    [Test]
+    public async Task StallAfterDeliveredFramesIsReportedNotRestarted() {
+        var (camera, native) = Create();
+        var deliver = true;
+        native.Setup(n => n.SVBGetVideoDataMono16(7, It.IsAny<ushort[]>(), 32, It.IsAny<int>()))
+            .Returns(() => deliver ? SVB_ERROR_CODE.SVB_SUCCESS : SVB_ERROR_CODE.SVB_ERROR_TIMEOUT);
+        await using var stream = new SvbonyConnectedStream(camera);
+        await stream.StartAsync(new(ExposureSeconds: 0.001), default);
+        await stream.NextAsync(default);
+        deliver = false;
+        native.Invocations.Clear();
+        var error = Assert.ThrowsAsync<LuckyCaptureException>(() => stream.NextAsync(default));
+        Assert.That(error!.Message, Is.EqualTo("SVBony video frame timed out"));
+        Assert.That(stream.StartupRestarts, Is.Zero);
+        native.Verify(n => n.SVBStopVideoCapture(7), Times.Never);
     }
 
     public class CameraProxy : DispatchProxy {

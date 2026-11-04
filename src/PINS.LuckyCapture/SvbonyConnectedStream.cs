@@ -16,6 +16,13 @@ public sealed class SvbonyConnectedStream : IConnectedCameraStream {
     private bool modeChanged;
     private bool monoOutput;
     private SVB_IMG_TYPE? restoreFormat;
+    // Reused across frames: the engine packs each frame before requesting the next one
+    // (acquisition is serialized by the adapter's frame gate), so no consumer keeps these.
+    private ushort[]? pixelBuffer;
+    private byte[]? byteBuffer;
+    /// <summary>Video restarts allowed while waiting for the first frame of a session.</summary>
+    public const int FirstFrameRestarts = 2;
+    public int StartupRestarts { get; private set; }
     public string Mode => "reflection_svbony_video";
 
     public static (IGenericCameraSDK Sdk, ISVBonyPInvokeProxy Native, int Id) Binding(object camera) {
@@ -90,21 +97,41 @@ public sealed class SvbonyConnectedStream : IConnectedCameraStream {
     public Task<AcquiredFrame> NextAsync(CancellationToken token) => Task.Run(() => {
         var count = checked(width * height);
         FrameMemory.EnsureFits((long)count * 2);
-        var pixels = new ushort[count];
-        var bytes = depth <= 8 ? new byte[count] : null;
+        if (pixelBuffer?.Length != count) pixelBuffer = new ushort[count];
+        if (depth <= 8 && byteBuffer?.Length != count) byteBuffer = new byte[count];
+        var pixels = pixelBuffer;
+        var bytes = depth <= 8 ? byteBuffer : null;
         var timer = System.Diagnostics.Stopwatch.StartNew();
+        var waitMs = SdkWaitMilliseconds(settings.ExposureSeconds);
         while (true) {
             token.ThrowIfCancellationRequested();
             if (!camera.Connected) throw new LuckyCaptureException("CAMERA_NOT_CONNECTED", "SVBony camera disconnected");
-            var result = depth > 8 ? native.SVBGetVideoDataMono16(id, pixels, checked(count * 2), 100) :
-                native.SVBGetVideoDataMono8(id, bytes!, count, 100);
+            var result = depth > 8 ? native.SVBGetVideoDataMono16(id, pixels, checked(count * 2), waitMs) :
+                native.SVBGetVideoDataMono8(id, bytes!, count, waitMs);
             if (result == SVB_ERROR_CODE.SVB_SUCCESS) {
-                if (bytes != null) for (var i = 0; i < count; i++) pixels[i] = bytes[i];
+                // Latin-1 decoding is an exact, vectorized byte-to-ushort widening.
+                if (bytes != null) System.Text.Encoding.Latin1.GetChars(bytes, System.Runtime.InteropServices.MemoryMarshal.Cast<ushort, char>(pixels.AsSpan()));
                 var frame = ConnectedCameraStreams.Frame(camera, settings, clock, ++sequence, width, height, depth, pixels);
                 return monoOutput ? frame with { IsBayered = false, BayerPattern = null } : frame;
             }
             if (result != SVB_ERROR_CODE.SVB_ERROR_TIMEOUT) Check(result);
-            if (timer.Elapsed.TotalSeconds > settings.ExposureSeconds * 2 + 5) throw new LuckyCaptureException("CAMERA_TIMEOUT", "SVBony video frame timed out");
+            // The SDK occasionally never delivers a first frame after a stream start (~7% of
+            // SV905C starts in an 80-recording stress test). Restarting video capture recovers
+            // about half of them; re-applying the camera mode or a third restart did not help.
+            // Delivered frames are never affected: this only applies before the first frame.
+            if (sequence == 0 && StartupRestarts < FirstFrameRestarts &&
+                timer.Elapsed.TotalMilliseconds > Math.Max(1000, 2.0 * waitMs)) {
+                StartupRestarts++;
+                NINA.Core.Utility.Logger.Warning($"SVBony delivered no first frame; restarting video capture ({StartupRestarts}/{FirstFrameRestarts})");
+                Check(native.SVBStopVideoCapture(id));
+                Check(native.SVBStartVideoCapture(id));
+                timer.Restart();
+                continue;
+            }
+            if (timer.Elapsed.TotalSeconds > settings.ExposureSeconds * 2 + 5)
+                throw new LuckyCaptureException("CAMERA_TIMEOUT", sequence == 0
+                    ? $"SVBony delivered no first frame after {StartupRestarts} video restarts"
+                    : "SVBony video frame timed out");
         }
     }, token);
 
@@ -117,6 +144,16 @@ public sealed class SvbonyConnectedStream : IConnectedCameraStream {
         Check(native.SVBSetCameraMode(id, SVB_CAMERA_MODE.SVB_MODE_TRIG_SOFT));
         Check(native.SVBStartVideoCapture(id));
     }
+
+    /// <summary>
+    /// Native wait per frame request. A wait that expires while the SDK is still receiving a
+    /// frame abandons it; with a 100 ms wait the first frame after a mode switch was lost in
+    /// ~7% of SV905C starts and every retry hit the same race. PINS's own SVBony capture waits
+    /// twice the exposure plus 500 ms, so this follows it (stop latency stays ~0.5 s for
+    /// planetary exposures).
+    /// </summary>
+    public static int SdkWaitMilliseconds(double exposureSeconds) =>
+        (int)Math.Clamp(exposureSeconds * 2000 + 500, 500, int.MaxValue);
 
     public ValueTask DisposeAsync() { Restore(); return ValueTask.CompletedTask; }
 }
