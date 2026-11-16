@@ -25,11 +25,16 @@ public sealed class AtikConnectedStream : IConnectedCameraStream {
         original = ReflectionAccess.Field<AtikCameraDll.ArtemisSetFastCallback>(camera, "fastModeCallback");
         callback = Receive;
     }
+    public static bool SupportsExposure(double seconds) {
+        var milliseconds = seconds * 1000;
+        return double.IsFinite(milliseconds) && milliseconds >= 1 && milliseconds <= int.MaxValue &&
+            Math.Abs(milliseconds - Math.Round(milliseconds)) <= 1e-6;
+    }
     public Task StartAsync(CaptureSettings value, CancellationToken token) {
         token.ThrowIfCancellationRequested();
         if (handle == IntPtr.Zero || !AtikCameraDll.HasFastMode(handle)) throw new LuckyCaptureException("STREAM_UNSUPPORTED", "Atik camera does not support fast exposures");
         var milliseconds = value.ExposureSeconds * 1000;
-        if (milliseconds < 1 || milliseconds > int.MaxValue || Math.Abs(milliseconds - Math.Round(milliseconds)) > 1e-6)
+        if (!SupportsExposure(value.ExposureSeconds))
             throw new LuckyCaptureException("INVALID_EXPOSURE", "Atik fast exposures require whole milliseconds of at least 1 ms");
         exposureMilliseconds = checked((int)Math.Round(milliseconds));
         settings = value; ConnectedCameraStreams.Configure(camera, value);
@@ -57,8 +62,9 @@ public sealed class AtikConnectedStream : IConnectedCameraStream {
         try {
             if (!started || pending == null) return;
             if (id != handle || data == IntPtr.Zero || width != (settings.Roi?.Width ?? camera.CameraXSize) / settings.BinX ||
-                height != (settings.Roi?.Height ?? camera.CameraYSize) / settings.BinY || (long)width * height * 2 > 32 * 1024 * 1024)
+                height != (settings.Roi?.Height ?? camera.CameraYSize) / settings.BinY)
                 throw new LuckyCaptureException("FRAME_LAYOUT_CHANGED", "Atik callback geometry or buffer is invalid");
+            FrameMemory.EnsureFits((long)width * height * 2);
             var words = new short[checked(width * height)]; Marshal.Copy(data, words, 0, words.Length);
             var pixels = new ushort[words.Length]; Buffer.BlockCopy(words, 0, pixels, 0, words.Length * 2);
             pending.TrySetResult(ConnectedCameraStreams.Frame(camera, settings, clock, ++sequence, width, height, 16, pixels));

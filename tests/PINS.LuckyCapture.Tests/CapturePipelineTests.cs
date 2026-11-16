@@ -4,6 +4,26 @@ using NUnit.Framework;
 namespace PINS.LuckyCapture.Tests;
 
 public class CapturePipelineTests {
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task CameraConnectedAfterDisconnectedSourceSelectionBecomesReady(bool notify) {
+        var camera = new FakeCamera();
+        camera.Disconnect();
+        await using var engine = new CaptureEngine(camera, Path.GetTempPath());
+        engine.ResetSource(new());
+        Assert.That(engine.Status.State, Is.EqualTo("DISCONNECTED"));
+        camera.Connect(notify);
+        Assert.That(engine.Status.State, Is.EqualTo("READY"));
+        await engine.StartPreviewAsync();
+        await Wait(() => engine.Preview != null);
+        Assert.That(engine.Status.State, Is.EqualTo("PREVIEWING"));
+        await engine.StopAsync();
+        camera.Disconnect();
+        Assert.That(engine.Status.State, Is.EqualTo("DISCONNECTED"));
+        camera.Connect(notify);
+        Assert.That(engine.Status.State, Is.EqualTo("READY"));
+    }
+
     private static AcquiredFrame Frame(ushort[] pixels, int width, int height, int bits = 16,
         string? bayer = null, short offsetX = 0) => new(1, DateTimeOffset.UtcNow, width, height,
         bits, bayer != null, bayer, offsetX, 0, 1, 1, null, pixels);
@@ -61,7 +81,7 @@ public class CapturePipelineTests {
     public async Task SlowWriterAppliesBoundedBackpressureAndWritesEveryAcceptedFrame() {
         var camera = new FakeCamera();
         var writer = new FakeWriter(camera, 8);
-        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => writer, _ => long.MaxValue);
+        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => writer, _ => long.MaxValue) { RecordingQueueFrames = 8 };
         await engine.StartRecordingAsync(new(FrameLimit: 40));
         await Wait(() => engine.Status.StopReason == "frame_limit" && !engine.IsActive);
         Assert.Multiple(() => {
@@ -99,7 +119,7 @@ public class CapturePipelineTests {
     public async Task NativeVideoOverflowIsCountedAndAcceptedFramesDrain() {
         var camera = new FakeCamera { NativeVideo = true };
         var writer = new FakeWriter(camera, 20);
-        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => writer, _ => long.MaxValue);
+        await using var engine = new CaptureEngine(camera, Path.GetTempPath(), (_, _, _) => writer, _ => long.MaxValue) { RecordingQueueFrames = 4 };
         await engine.StartRecordingAsync(new(FrameLimit: 30));
         await Wait(() => !engine.IsActive);
         Assert.Multiple(() => {
@@ -147,7 +167,80 @@ public class CapturePipelineTests {
         Assert.That(preview.Status.StopReason, Is.EqualTo("camera_disconnected"));
     }
 
-    private static async Task Wait(Func<bool> done) {
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task SaveRootFollowsProfileUnlessExplicitlyOverridden(bool custom) {
+        var root = Path.Combine(Path.GetTempPath(), "LuckyCapture-custom-" + Guid.NewGuid());
+        var selected = Path.Combine(root, "selected");
+        var profile = selected;
+        var camera = new FakeCamera();
+        var writer = new FakeWriter(camera);
+        var probes = new List<string>();
+        string? writerPath = null;
+        try {
+            await using var engine = new CaptureEngine(camera, Path.Combine(root, "default"),
+                (path, _, _) => { writerPath = path; return writer; },
+                path => { probes.Add(path); return long.MaxValue; }, () => profile);
+            Assert.That(engine.DefaultOutputDirectory, Is.EqualTo(selected));
+            await engine.StartRecordingAsync(new(FrameLimit: 1, OutputDirectory: custom ? selected : null));
+            await Wait(() => !engine.IsActive);
+            Assert.That(Path.GetDirectoryName(writerPath), Is.EqualTo(selected));
+            Assert.That(probes, Is.All.EqualTo(selected));
+            await engine.StartPreviewAsync();
+            await Wait(() => engine.Preview != null);
+            await engine.StopAsync();
+            profile = Path.Combine(root, "changed-profile");
+            Assert.That(engine.DefaultOutputDirectory, Is.EqualTo(profile));
+            var png = await engine.SaveSnapshotAsync(new(OutputDirectory: custom ? selected : ""), default);
+            Assert.That(Path.GetDirectoryName(png), Is.EqualTo(custom ? selected : profile));
+            Assert.That(File.Exists(png), Is.True);
+            Assert.That(Directory.Exists(Path.Combine(root, "default")), Is.False);
+            Assert.Throws<LuckyCaptureException>(() => OutputPaths.ResolveRoot(root, "relative/folder"));
+        } finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task CaptureLogAndJsonContainActualTimingAndOnlyReportedTemperature(bool hasTemperature) {
+        var folder = Path.Combine(Path.GetTempPath(), "LuckyCapture-metadata-" + Guid.NewGuid());
+        var camera = new FakeCamera { SensorTemperature = hasTemperature ? -12.5 : null };
+        try {
+            await using var engine = new CaptureEngine(camera, folder,
+                (path, frame, options) => RecordingWriters.Create(path, frame, options, camera.Metadata));
+            await engine.StartRecordingAsync(new(FrameLimit: 3, Target: "Moon", Filter: "IR"));
+            await Wait(() => !engine.IsActive);
+            Assert.That(engine.Status.State, Is.EqualTo("READY"));
+            Assert.That(engine.Status.SidecarError, Is.Null);
+            var path = engine.Status.OutputPath!;
+            using var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.ChangeExtension(path, ".json")));
+            var metadata = json.RootElement;
+            Assert.That(metadata.GetProperty("serTimestampsPresent").GetBoolean(), Is.True);
+            Assert.That(metadata.GetProperty("target").GetString(), Is.EqualTo("Moon"));
+            Assert.That(metadata.GetProperty("filter").GetString(), Is.EqualTo("IR"));
+            var bytes = File.ReadAllBytes(path);
+            var trailer = 178 + 3 * 8 * 8 * 2;
+            var first = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(trailer, 8));
+            var last = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(trailer + 16, 8));
+            Assert.That(metadata.GetProperty("firstWrittenFrameUtc").GetDateTimeOffset().UtcTicks, Is.EqualTo(first));
+            Assert.That(metadata.GetProperty("lastWrittenFrameUtc").GetDateTimeOffset().UtcTicks, Is.EqualTo(last));
+            Assert.That(metadata.GetProperty("recordedAverageFps").GetDouble(), Is.EqualTo(2.0 * TimeSpan.TicksPerSecond / (last - first)).Within(.00001));
+            var temperature = metadata.GetProperty("sensorTemperature");
+            var text = File.ReadAllText(Path.ChangeExtension(path, ".txt"));
+            Assert.That(text, Does.Contain("Target=Moon").And.Contain("Filter=IR").And.Contain("Timestamp meaning=Host frame arrival/completion"));
+            if (hasTemperature) {
+                Assert.That(temperature.GetProperty("start").GetDouble(), Is.EqualTo(-12.5));
+                Assert.That(temperature.GetProperty("end").GetDouble(), Is.EqualTo(-12.5 + camera.Calls));
+                Assert.That(temperature.GetProperty("samples").GetInt64(), Is.GreaterThanOrEqualTo(2));
+                Assert.That(text, Does.Contain("Sensor temperature start (C)=-12.5"));
+            } else {
+                Assert.That(temperature.GetProperty("start").ValueKind, Is.EqualTo(System.Text.Json.JsonValueKind.Null));
+                Assert.That(temperature.GetProperty("samples").GetInt64(), Is.Zero);
+                Assert.That(text, Does.Contain("Sensor temperature start (C)=Unavailable"));
+            }
+        } finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+    }
+
+    internal static async Task Wait(Func<bool> done) {
         var timer = Stopwatch.StartNew();
         while (!done()) {
             if (timer.Elapsed > TimeSpan.FromSeconds(5)) Assert.Fail("Capture did not finish within five seconds");
@@ -182,13 +275,14 @@ public class CapturePipelineTests {
         Assert.That(process.ExitCode, Is.Zero, await errors);
     }
 
-    private sealed class FakeCamera : ILuckyCaptureCamera {
+    internal sealed class FakeCamera : ILuckyCaptureCamera {
         public event Action<bool>? ConnectionChanged;
         private bool connected = true;
         public int Calls, BeginCalls, EndCalls;
         public bool NativeVideo;
         public bool FailAcquisition;
-        public CameraMetadata Metadata => new(connected, "fake", "test", 8, 8, 16, "Monochrome", null, 1, 1, false, false, true, NativeVideo);
+        public double? SensorTemperature;
+        public CameraMetadata Metadata => new(connected, "fake", "test", 8, 8, 16, "Monochrome", SensorTemperature is double t ? t + Calls : null, 1, 1, false, false, true, NativeVideo);
         public IReadOnlyList<ControlDescriptor> Controls => [];
         public void ValidateSettings(CaptureSettings settings) { }
         public Task BeginAsync(CancellationToken token) { BeginCalls++; return Task.CompletedTask; }
@@ -201,9 +295,10 @@ public class CapturePipelineTests {
         }
         public Task EndAsync() { EndCalls++; return Task.CompletedTask; }
         public void Disconnect() { connected = false; ConnectionChanged?.Invoke(false); }
+        public void Connect(bool notify) { connected = true; if (notify) ConnectionChanged?.Invoke(true); }
     }
 
-    private sealed class FakeWriter(FakeCamera camera, int delay = 0) : IFrameWriter {
+    internal sealed class FakeWriter(FakeCamera camera, int delay = 0) : IFrameWriter {
         public long FramesWritten { get; private set; }
         public long BytesWritten { get; private set; }
         public int MaximumOutstandingFrames, FinishCalls;

@@ -44,6 +44,13 @@ Use GET health/camera/capabilities/controls/settings/status, PUT settings,
 POST preview/start, recording/start, recording/stop, or snapshot. Preview returns
 PNG bytes; histogram returns JSON; events provides SSE status updates.
 
+The exposure control offers milliseconds or seconds, including sub-millisecond
+presets for bright solar and lunar targets. 20 ms is the default, not a fixed
+minimum. Every camera uses the exposure range reported by its driver; unsupported
+presets are disabled. Atik exposures outside its whole-millisecond fast-mode
+range use ordinary native exposures. The API continues to accept `exposureSeconds` in seconds
+(for example, `0.0002` means 0.2 ms).
+
 Example settings:
 
 ```json
@@ -58,9 +65,19 @@ the first frame, acquisition retries once using full-frame capture and software
 crop. Unknown drivers and cameras without hardware ROI use software crop directly.
 `status.roiMode` reports `hardware`, `hardware_crop`, `software`, or `full_frame`.
 Software cropping reduces output size, but does not improve camera transfer FPS.
-Native stream source buffers remain limited to 32 MiB; a scaled JPEG preview
+Native and INDI source buffers, normalized frames and software crops share a
+host-memory guard: at most 128 MiB per 16-bit working frame, reduced to one
+sixteenth of the .NET-reported available memory on smaller hosts. This is a
+memory safeguard, not a 4096-pixel sensor/ROI limit. The recording queue remains
+bounded to its existing 32 MiB target (at least one frame for larger sensors).
+The API reports `maxFrameBytes` and `roiFallbackFrameLimitBytes` in capabilities.
+For example, a 6224x4168 raw frame needs about 49.5 MiB and fits on hosts with
+sufficient memory. Bayer ROI coordinates and dimensions still require even
+alignment; valid ROI bounds come from the connected sensor. A scaled JPEG preview
 cannot supply exact sensor ROI coordinates (use ordinary exposures instead).
 ROI fallback never creates a second camera connection or modifies PINS core.
+Idle connection status follows the current PINS equipment connection, including
+a camera connected after selecting the real source; no plugin restart is needed.
 `acquisitionMode: "exposures"` forces ordinary capture. Unverified streams require
 `allowExperimentalStreaming: true`; QHY additionally requires
 `allowDriverReconnect: true`. INDI depth reduction is rejected unless explicitly
@@ -100,10 +117,81 @@ dotnet build src/PINS.LuckyCapture/PINS.LuckyCapture.csproj -c Release -r linux-
 dotnet test tests/PINS.LuckyCapture.Tests/PINS.LuckyCapture.Tests.csproj -c Release -p:GeneratePackageOnBuild=false -p:DisableImplicitSystemDrawingReference=true -p:Platform=AnyCPU -p:PlatformTarget=AnyCPU
 ```
 
-95 local tests pass; Linux ARM64 compilation and the physical checks above passed.
+The capture regression tests pass; Linux ARM64 compilation and the physical checks above passed.
 Frontend type checking and production build pass. Existing PINS System.Windows
 compatibility warnings remain. The backend and TNS UI are deployed on the Pi;
 served assets, live PNG preview and histogram passed deployment checks. Mobile browser emulation and English/German ROI explanations passed layout
 checks. Debian installation validation, broader SDK hardware coverage and
 astronomy application compatibility remain. FFmpeg decoding does not establish
 AutoStakkert/PIPP compatibility with FFV1. License: MPL-2.0.
+
+## Experimental focus and offline simulation (0.2.0, unstable)
+
+Use **Focus** for native-frame focus scores, the already-connected PINS
+focuser, or hardware-free Moon/Sun/Jupiter/Saturn simulation. Simulation defaults
+to a virtual motor. Connected hardware requires explicit arming and bounded
+travel. Software cannot verify solar safety. SER replay and PNG/TIFF stills use
+managed local fixtures; synthetic images and recordings are labelled explicitly.
+PINS core requires no changes.
+
+Choose the target and press **Find best focus**; preview and analysis start
+automatically. **Manual** offers fine/normal/coarse inward/outward adjustments
+with a live preview on phones. Advanced settings and simulation/replay are
+collapsed. A clear confirmation approves bounded physical motion before it starts.
+
+See [setup, API contract, reproduction commands and validation](docs/focus-simulation.md).
+Use LuckyCapture on `unstable`, the `acocalypso/Touch-N-Stars` frontend on `feat/luckycapture`,
+and the TNS Linux plugin on `nitr57/N.I.N.A-Plugin-for-Touch-N-Stars:unstable`.
+
+## Camera preferences and output (0.2.1)
+
+LuckyCapture offers only the raw output formats reported by the connected SDK.
+ZWO streaming supports advertised RAW8/RAW16, checks the SDK ROI readback, restores
+its previous format/geometry on stop, and logs the applied stream geometry. A
+12-bit sensor ADC does not imply a separate RAW12 transfer format: RAW16 preserves
+that precision in two bytes per pixel. RAW8 reduces transfer and SER storage size.
+Actual frame rate depends on exposure, ROI height, USB, camera mode and disk speed.
+
+The web UI remembers applied settings, save folder and preview orientation per
+PINS host and camera ID in that browser. Unsupported choices are rejected by the
+connected driver's capability checks. Preview rotation changes only the display;
+ROI selection is mapped back to sensor coordinates and recorded pixels stay raw.
+
+Recording > File settings > Save folder accepts an absolute directory on the PINS
+host (including a mounted SSD). Blank uses the active PINS profile's imaging
+folder, shown in the UI, for both recordings and PNG snapshots. Changes to the
+profile or its imaging folder apply to the next capture without restarting.
+`PINS_LUCKYCAPTURE_DIRECTORY`, when configured, overrides that profile default;
+the legacy NINA/LuckyCapture folder is used only if no imaging folder is set. The service
+user needs write permission. Subfolders remain relative to the selected root and
+disk-space checks use the selected filesystem. Saved PNGs use that root too.
+
+## SER timestamps and capture logs (0.2.2)
+
+Completed SER files include a standard per-frame UTC timestamp trailer. SerPlayer
+can derive playback cadence from these timestamps instead of its 50 FPS fallback.
+Times describe host frame arrival/completion, not hardware exposure-start timing.
+Dropped frames retain their real gaps; one-frame clips have no measurable FPS.
+
+Each SER/AVI capture also writes `.json` and readable `.txt` companions with camera
+and driver identity, native layout, exposure, gain/offset, supported USB setting,
+ROI/binning, target/filter, recorded frame count and timing/FPS, and reported sensor
+temperature at start/end plus sampled min/max/mean. Unsupported temperature is
+marked unavailable. The temperature samples use existing PINS telemetry; there
+is no sensor-control change or independent connection.
+
+A bounded disk spool holds timestamps while recording. Successful finalization
+appends the trailer and removes the spool. An interrupted `.ser.partial` and its
+`.timestamps.partial` companion should be kept together for recovery with timing.
+Recovery also accepts finalized stamped files and legacy files without stamps;
+it does not invent missing historical timestamps. Disk checks reserve space for
+the trailer as well as its temporary spool. Existing files are not rewritten.
+
+See [SER timing and metadata notes](docs/ser-timing-and-metadata.md).
+
+## Experimental stream read fixes (0.2.6)
+
+Player One now waits for frame readiness before downloading, with bounded reads
+and correct hardware ROI alignment. ToupTek-family reads preserve native failure
+codes, verify stream mode and restore the original trigger state on stop or failed
+startup. See [stream read handling and hardware retest notes](docs/streaming-recovery-0.2.6.md).

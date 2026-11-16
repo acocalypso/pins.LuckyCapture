@@ -37,9 +37,9 @@ public class RecoveryAndTimingTests {
             Assert.That(result.DiscardedTailBytes, Is.EqualTo(7));
             Assert.That(await File.ReadAllBytesAsync(source), Is.EqualTo(original));
             var recovered = await File.ReadAllBytesAsync(target);
-            Assert.That(recovered.Length, Is.EqualTo(178 + 32));
+            Assert.That(recovered.Length, Is.EqualTo(178 + 32 + 16));
             Assert.That(BinaryPrimitives.ReadInt32LittleEndian(recovered.AsSpan(38, 4)), Is.EqualTo(2));
-            Assert.That(recovered.AsSpan(178).ToArray(), Is.EqualTo(frame.Data.ToArray().Concat(frame.Data.ToArray()).ToArray()));
+            Assert.That(recovered.AsSpan(178, 32).ToArray(), Is.EqualTo(frame.Data.ToArray().Concat(frame.Data.ToArray()).ToArray()));
             Assert.ThrowsAsync<IOException>(() => SerRecovery.RecoverCopyAsync(source, target));
         } finally { Directory.Delete(directory, true); }
     }

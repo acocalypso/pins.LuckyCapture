@@ -44,16 +44,16 @@ public sealed class GphotoPreviewStream : IConnectedCameraStream {
         return new(++sequence, arrival, decoded.Width, decoded.Height, 8, false, null, 0, 0, 1, 1, null,
             decoded.Pixels, PixelFormat: "RGB");
     }
-    public static async Task<(int Width, int Height, ushort[] Pixels)> DecodeJpegAsync(byte[] jpeg, CancellationToken token) {
+    public static async Task<(int Width, int Height, ushort[] Pixels)> DecodeJpegAsync(byte[] jpeg, CancellationToken token, int pixelLimit = 10485760, string? localImagePath = null) {
         var info = new ProcessStartInfo("ffmpeg") { RedirectStandardInput = true, RedirectStandardOutput = true,
             RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var arg in new[] { "-v", "error", "-i", "pipe:0", "-frames:v", "1", "-threads", "1", "-f", "image2pipe", "-c:v", "ppm", "pipe:1" }) info.ArgumentList.Add(arg);
+        foreach (var arg in new[] { "-v", "error", "-max_alloc", "67108864", "-max_pixels", pixelLimit.ToString(System.Globalization.CultureInfo.InvariantCulture), "-protocol_whitelist", "file,pipe", "-i", localImagePath ?? "pipe:0", "-frames:v", "1", "-threads", "1", "-f", "image2pipe", "-c:v", "ppm", "pipe:1" }) info.ArgumentList.Add(arg);
         using var process = Process.Start(info) ?? throw new IOException("FFmpeg did not start");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(10));
         try {
             var errors = process.StandardError.ReadToEndAsync(timeout.Token);
             async Task WriteInput() {
-                try { await process.StandardInput.BaseStream.WriteAsync(jpeg, timeout.Token).ConfigureAwait(false); }
+                try { if (localImagePath == null) await process.StandardInput.BaseStream.WriteAsync(jpeg, timeout.Token).ConfigureAwait(false); }
                 finally { process.StandardInput.Close(); }
             }
             var input = WriteInput();
@@ -69,7 +69,7 @@ public sealed class GphotoPreviewStream : IConnectedCameraStream {
             }
             if (await ReadToken() != "P6") throw new IOException("Expected RGB PPM");
             var width = int.Parse(await ReadToken()); var height = int.Parse(await ReadToken());
-            if (await ReadToken() != "255" || width <= 0 || height <= 0 || (long)width * height * 3 > 32 * 1024 * 1024) throw new IOException("Invalid preview dimensions");
+            if (await ReadToken() != "255" || width <= 0 || height <= 0 || (long)width * height > pixelLimit || (long)width * height * 3 > 32 * 1024 * 1024) throw new IOException("Invalid preview dimensions");
             var bytes = new byte[checked(width * height * 3)]; await stream.ReadExactlyAsync(bytes, timeout.Token).ConfigureAwait(false);
             await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
             await input.ConfigureAwait(false);

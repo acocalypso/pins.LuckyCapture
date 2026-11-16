@@ -44,7 +44,7 @@ public sealed class IndiConnectedStream : IConnectedCameraStream {
         clock = new();
         var info = ReflectionAccess.Field<INDIDeviceInfo>(device, "_device");
         tap = new Tap(info, (data, format) => {
-            if (data.Length > 32 * 1024 * 1024) { frames.Writer.TryComplete(new LuckyCaptureException("FRAME_TOO_LARGE", "INDI stream frame exceeds 32 MiB")); return; }
+            if (data.Length > FrameMemory.MaximumFrameBytes) { frames.Writer.TryComplete(new LuckyCaptureException("FRAME_TOO_LARGE", "INDI stream frame exceeds this host's frame memory limit")); return; }
             if (!frames.Writer.TryWrite((data, format, clock.Now))) DroppedFrames++;
         });
         started = true;
@@ -92,7 +92,7 @@ public sealed class IndiConnectedStream : IConnectedCameraStream {
     }
 
     public static (int Depth, string? Format, ushort[] Values) DecodeRaw(byte[] data, string format, int width, int height, int sensorDepth) {
-        if (format != ".stream" || data.Length > 32 * 1024 * 1024 || width <= 0 || height <= 0)
+        if (format != ".stream" || data.Length > FrameMemory.MaximumFrameBytes || width <= 0 || height <= 0)
             throw new LuckyCaptureException("UNSUPPORTED_PIXEL_FORMAT", "Expected bounded RAW INDI stream data");
         var pixels = checked((long)width * height);
         var channels = data.LongLength == pixels * 3 || data.LongLength == pixels * 6 ? 3 : 1;
@@ -101,6 +101,7 @@ public sealed class IndiConnectedStream : IConnectedCameraStream {
         if (depth == 0) throw new LuckyCaptureException("UNSUPPORTED_PIXEL_FORMAT", "INDI RAW payload does not match mono/Bayer/RGB geometry");
         if (sensorDepth > 8 && depth == 8)
             throw new LuckyCaptureException("STREAM_DEPTH_LOSS", "INDI downscaled streaming to 8-bit; select exposures to retain native depth");
+        FrameMemory.EnsureFits(samples * sizeof(ushort));
         var values = new ushort[(int)samples];
         for (var i = 0; i < values.Length; i++) values[i] = depth == 8 ? data[i] : BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(i * 2, 2));
         return (depth, channels == 3 ? "RGB" : null, values);

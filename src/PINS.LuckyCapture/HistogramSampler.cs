@@ -15,8 +15,9 @@ public static class HistogramSampler {
             var samples = frame.Width * frame.Height * frame.Channels;
             var step = Math.Max(1, (samples + 262143) / 262144);
             var n = 0; var min = levels - 1; var max = 0; var saturated = 0; long total = 0;
+            var data = frame.Data.Span; var wide = frame.BitDepth > 8;
             for (var i = 0; i < samples; i += step) {
-                var value = frame.Pixel(i);
+                var value = FramePacket.Sample(data, i, wide);
                 counts[value]++; bins[value * 256 / levels]++;
                 min = Math.Min(min, value); max = Math.Max(max, value); total += value; n++;
                 if (value == levels - 1) saturated++;

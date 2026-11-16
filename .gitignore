@@ -8,3 +8,4 @@ artifacts/
 
 # Private hardware transport never belongs in the public repository.
 pi_task.py
+logs/*

@@ -3,6 +3,21 @@ using NUnit.Framework;
 namespace PINS.LuckyCapture.Tests;
 
 public class RoiAcquisitionTests {
+    [Test]
+    public async Task PlayerOneAlignedEnvelopePreservesExactRequestedSensorPixels() {
+        var capture = new RoiAcquisition();
+        var requested = new CaptureSettings(Roi: new(2, 2, 6, 2));
+        var frame = await capture.AcquireAsync(requested, 12, 8, true,
+            (source, _) => {
+                Assert.That(source.Roi, Is.EqualTo(new RegionOfInterest(2, 2, 8, 2)));
+                return Task.FromResult(new AcquiredFrame(1, DateTimeOffset.UtcNow, 8, 2, 16, true, "RGGB",
+                    0, 0, 1, 1, source.Roi, Enumerable.Range(0, 16).Select(i => (ushort)i).ToArray()));
+            }, () => throw new AssertionException("Aligned Player One ROI must not fall back to full frame"), default, 4, 2);
+        Assert.That(frame.Roi, Is.EqualTo(requested.Roi));
+        Assert.That(frame.Pixels, Is.EqualTo(new ushort[] { 0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13 }));
+        Assert.That(capture.Mode, Is.EqualTo("hardware_crop"));
+    }
+
     private static AcquiredFrame Full(int channels = 1, short bin = 1) => new(1, DateTimeOffset.UtcNow,
         8, 6, 16, channels == 1, channels == 1 ? "RGGB" : null, 0, 0, bin, bin, null,
         Enumerable.Range(0, 48 * channels).Select(i => (ushort)i).ToArray(), channels == 3 ? "RGB" : null);

@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 
 namespace PINS.LuckyCapture;
 
@@ -60,22 +61,33 @@ public sealed class FramePacket : IDisposable {
             }
         }
         var byteCount = frame.Pixels.LongLength * (frame.BitDepth > 8 ? 2 : 1);
-        if (byteCount > 32 * 1024 * 1024)
-            throw new LuckyCaptureException("FRAME_TOO_LARGE", "Use ROI: normalized frames are limited to 32 MiB");
+        FrameMemory.EnsureFits(frame.Pixels.LongLength * sizeof(ushort));
         var length = (int)byteCount;
         var packet = new FramePacket(frame, format, new BufferOwner(length));
         try {
-            var span = packet.owner.Buffer.AsSpan(0, length);
-            var maximum = (1 << frame.BitDepth) - 1;
-            for (var i = 0; i < frame.Pixels.Length; i++) {
-                var value = frame.Pixels[i];
-                if (value > maximum) throw new LuckyCaptureException("UNSUPPORTED_PIXEL_FORMAT", "Pixel value exceeds reported native depth");
-                if (frame.BitDepth == 8) span[i] = (byte)value;
-                else BinaryPrimitives.WriteUInt16LittleEndian(span.Slice(i * 2, 2), value);
-            }
+            Pack(frame.Pixels, frame.BitDepth, packet.owner.Buffer.AsSpan(0, length));
             return packet;
         } catch { packet.Dispose(); throw; }
     }
+
+    /// <summary>Range-checks and packs scalar samples; vectorized, since this runs for every frame.</summary>
+    internal static void Pack(ReadOnlySpan<ushort> pixels, int bitDepth, Span<byte> destination) {
+        var maximum = (ushort)((1 << bitDepth) - 1);
+        if (bitDepth < 16 && pixels.IndexOfAnyExceptInRange((ushort)0, maximum) >= 0)
+            throw new LuckyCaptureException("UNSUPPORTED_PIXEL_FORMAT", "Pixel value exceeds reported native depth");
+        if (bitDepth == 8) {
+            // All samples are <= 0xFF here, so Latin-1 narrowing is an exact vectorized ushort-to-byte copy.
+            System.Text.Encoding.Latin1.GetBytes(MemoryMarshal.Cast<ushort, char>(pixels), destination);
+        } else if (BitConverter.IsLittleEndian) {
+            MemoryMarshal.AsBytes(pixels).CopyTo(destination);
+        } else {
+            for (var i = 0; i < pixels.Length; i++) BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(i * 2, 2), pixels[i]);
+        }
+    }
+
+    /// <summary>Reads sample <paramref name="index"/> from packed frame bytes without per-call bounds setup.</summary>
+    public static int Sample(ReadOnlySpan<byte> data, int index, bool wide) =>
+        wide ? BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(index * 2, 2)) : data[index];
 
     public int Pixel(int index) => BitDepth == 8 ? Data.Span[index] : BinaryPrimitives.ReadUInt16LittleEndian(Data.Span.Slice(index * 2, 2));
 
@@ -84,8 +96,9 @@ public sealed class FramePacket : IDisposable {
         var expected = (long)width * height * channels * (bitDepth > 8 ? 2 : 1);
         if (width <= 0 || height <= 0 || bitDepth is < 8 or > 16 ||
             pixelFormat is not ("Mono" or "RGB" or "BGR" or "RGGB" or "GRBG" or "GBRG" or "BGGR") ||
-            expected != pixels.Length || expected > 32 * 1024 * 1024)
+            expected != pixels.Length)
             throw new LuckyCaptureException("UNSUPPORTED_PIXEL_FORMAT", "Invalid raw frame layout");
+        FrameMemory.EnsureFits((long)width * height * channels * sizeof(ushort));
         var metadata = new AcquiredFrame(1, DateTimeOffset.UtcNow, width, height, bitDepth,
             channels == 1 && pixelFormat != "Mono", pixelFormat, 0, 0, 1, 1, null, []);
         var frame = new FramePacket(metadata, pixelFormat, new BufferOwner((int)expected));

@@ -15,6 +15,14 @@ using NUnit.Framework;
 namespace PINS.LuckyCapture.Tests;
 
 public class CameraIntegrationTests {
+    [TestCase(0.0002, false)]
+    [TestCase(0.0015, false)]
+    [TestCase(0.001, true)]
+    [TestCase(0.02, true)]
+    [TestCase(double.NaN, false)]
+    public void AtikFastModeOnlyAcceptsWholeMilliseconds(double seconds, bool supported) =>
+        Assert.That(AtikConnectedStream.SupportsExposure(seconds), Is.EqualTo(supported));
+
     [Test]
     public async Task PublicBlockReservationHasOneWinnerAndNeverConnectsCamera() {
         var (mediator, handler, _) = Create();
@@ -72,17 +80,28 @@ public class CameraIntegrationTests {
         using var container = new System.ComponentModel.Composition.Hosting.CompositionContainer(catalog);
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<ICameraMediator>(container, mediator);
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<ISequenceMediator>(container, Mock.Of<ISequenceMediator>());
+        System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<IFocuserMediator>(container, Mock.Of<IFocuserMediator>());
+        var profiles = new Mock<NINA.Profile.Interfaces.IProfileService> { DefaultValue = DefaultValue.Mock };
+        var imagingDirectory = Path.Combine(Path.GetTempPath(), "PINS-imaging");
+        profiles.Setup(p => p.ActiveProfile.ImageFileSettings.FilePath).Returns(imagingDirectory);
+        System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue(container, profiles.Object);
         System.ComponentModel.Composition.AttributedModelServices.ComposeExportedValue<NINA.Plugin.Interfaces.IMessageBroker>(container, new NINA.Plugin.Messaging.MessageBroker());
         var manifest = container.GetExportedValue<NINA.Plugin.Interfaces.IPluginManifest>();
         Assert.That(manifest.Name, Is.EqualTo("PINS LuckyCapture"));
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PINS_LUCKYCAPTURE_DIRECTORY")))
+            Assert.That(((LuckyCapturePlugin)manifest).Engine.DefaultOutputDirectory, Is.EqualTo(imagingDirectory));
         await manifest.Initialize();
         await manifest.Teardown();
         handler.Verify(h => h.Connect(), Times.Never);
     }
 
-    [Test]
-    public async Task OneFramePreservesPixelsDepthAndSequenceSettings() {
+    [TestCase(0.01)]
+    [TestCase(0.001)]
+    [TestCase(0.0002)]
+    [TestCase(0.00001)]
+    public async Task OneFramePreservesPixelsDepthAndSequenceSettings(double exposureSeconds) {
         var (mediator, handler, info) = Create();
+        info.ExposureMin = 0.000001;
         var pixels = new ushort[] { 0, 4095, 1024, 2048 };
         info.XSize = info.YSize = 2;
         info.CanSubSample = false;
@@ -93,7 +112,7 @@ public class CameraIntegrationTests {
         handler.Setup(h => h.Download(It.IsAny<CancellationToken>())).ReturnsAsync(exposure.Object);
         using var adapter = new NinaStandardCameraAdapter(mediator, Mock.Of<ISequenceMediator>());
         await adapter.BeginAsync(default);
-        var frame = await adapter.AcquireAsync(new(0.01, 42, 5, Roi: new(0, 0, 2, 2)), default);
+        var frame = await adapter.AcquireAsync(new(exposureSeconds, 42, 5, Roi: new(0, 0, 2, 2)), default);
         Assert.Multiple(() => {
             Assert.That(frame.Pixels, Is.SameAs(pixels));
             Assert.That(frame.BitDepth, Is.EqualTo(12));
@@ -101,7 +120,7 @@ public class CameraIntegrationTests {
             Assert.That(adapter.Metadata.ExclusiveOwnershipSupported, Is.False);
         });
         handler.Verify(h => h.Capture(It.Is<CaptureSequence>(s => s.Gain == 42 && s.Offset == 5 &&
-            !s.EnableSubSample && s.ExposureTime == 0.01), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()), Times.Once);
+            !s.EnableSubSample && s.ExposureTime == exposureSeconds), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()), Times.Once);
         Assert.That(adapter.Metadata.RoiSupported, Is.True);
         Assert.That(adapter.RoiMode, Is.EqualTo("software"));
         await adapter.EndAsync();
@@ -159,6 +178,54 @@ public class CameraIntegrationTests {
         info.SensorType = SensorType.RGGB;
         Assert.Throws<LuckyCaptureException>(() => NinaStandardCameraAdapter.Validate(new(Roi: new(1, 0, 10, 10)), info));
         NinaStandardCameraAdapter.Validate(new(Roi: new(0, 0, 640, 480)), info);
+    }
+
+    [Test]
+    public async Task PreviewCanStopAndRestartWithoutLeavingPinsExposing() {
+        var (mediator, handler, info) = Create();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        handler.Setup(h => h.Capture(It.IsAny<CaptureSequence>(), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()))
+            .Returns<CaptureSequence, CancellationToken, IProgress<ApplicationStatus>>(async (_, token, _) => {
+                info.IsExposing = true;
+                started.TrySetResult();
+                // Match PINS Capture: cancellation exits before IsExposing is reset.
+                await Task.Delay(Timeout.Infinite, token);
+            });
+        handler.Setup(h => h.AbortExposure()).Callback(() => {
+            Assert.That(mediator.IsFreeToCapture(new object()), Is.False, "Abort must happen before releasing ownership");
+            info.IsExposing = false;
+        });
+        using var adapter = new NinaStandardCameraAdapter(mediator, Mock.Of<ISequenceMediator>());
+        await using var engine = new CaptureEngine(adapter, System.IO.Path.GetTempPath());
+        for (var cycle = 0; cycle < 3; cycle++) {
+            started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            await engine.StartPreviewAsync();
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await engine.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.That(engine.Status.State, Is.EqualTo("READY"));
+            Assert.That(info.IsExposing, Is.False);
+            Assert.That(mediator.IsFreeToCapture(new object()), Is.True);
+        }
+        handler.Verify(h => h.AbortExposure(), Times.Exactly(3));
+    }
+
+    [Test]
+    public async Task FailedOwnedExposureIsAbortedButUnrelatedBusyCameraIsLeftAlone() {
+        var (mediator, handler, info) = Create();
+        handler.Setup(h => h.Capture(It.IsAny<CaptureSequence>(), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>()))
+            .Callback(() => info.IsExposing = true).ThrowsAsync(new InvalidOperationException("Driver failure"));
+        handler.Setup(h => h.AbortExposure()).Callback(() => info.IsExposing = false);
+        using var adapter = new NinaStandardCameraAdapter(mediator, Mock.Of<ISequenceMediator>());
+        info.IsExposing = true;
+        Assert.ThrowsAsync<LuckyCaptureException>(() => adapter.BeginAsync(default));
+        await adapter.EndAsync();
+        handler.Verify(h => h.AbortExposure(), Times.Never);
+        info.IsExposing = false;
+        await adapter.BeginAsync(default);
+        Assert.ThrowsAsync<InvalidOperationException>(() => adapter.AcquireAsync(new(), default));
+        handler.Verify(h => h.AbortExposure(), Times.Once);
+        Assert.That(info.IsExposing, Is.False);
+        await adapter.EndAsync();
     }
 
     [Test]
